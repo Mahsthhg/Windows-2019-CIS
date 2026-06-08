@@ -12,6 +12,7 @@ from config import (
     PRICE_PER_GB, MIN_GB, MAX_GB,
     CARD_NUMBER, CARD_HOLDER, BANK_NAME,
     BOT_NAME, SUPPORT_USERNAME,
+    FORCE_JOIN_ENABLED, FORCE_JOIN_CHANNELS,
 )
 from database import (
     upsert_user, get_user, get_user_orders, get_order,
@@ -58,12 +59,73 @@ async def _send_to_main_menu(update: Update, text: str = "منوی اصلی:") -
     await update.effective_message.reply_text(text, reply_markup=main_menu_kb())
 
 
+# ─── Force Join ───────────────────────────────────────────────────────────────
+
+async def _get_unjoined_channels(bot, user_id: int) -> list[str]:
+    """کانال‌هایی که کاربر عضو آن‌ها نیست را برمی‌گرداند."""
+    unjoined = []
+    for channel in FORCE_JOIN_CHANNELS:
+        try:
+            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+            if member.status in ("left", "kicked", "banned"):
+                unjoined.append(channel)
+        except Exception:
+            # اگر بات ادمین کانال نباشد یا خطایی رخ دهد، رد می‌کنیم
+            unjoined.append(channel)
+    return unjoined
+
+
+def _join_required_keyboard(channels: list[str]) -> InlineKeyboardMarkup:
+    buttons = []
+    for ch in channels:
+        label = ch if ch.startswith("@") else f"@{ch}"
+        # لینک عمومی کانال
+        url = f"https://t.me/{label.lstrip('@')}"
+        buttons.append([InlineKeyboardButton(f"📢 عضویت در {label}", url=url)])
+    buttons.append([InlineKeyboardButton("✅ عضو شدم، بررسی کن", callback_data="check_join")])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    True  → کاربر عضو همه کانال‌هاست، ادامه بده.
+    False → عضو نیست، پیام نمایش داده شد، handler باید return کند.
+    """
+    if not FORCE_JOIN_ENABLED or not FORCE_JOIN_CHANNELS:
+        return True
+
+    user_id = update.effective_user.id
+    unjoined = await _get_unjoined_channels(context.bot, user_id)
+
+    if not unjoined:
+        return True
+
+    channels_text = "\n".join(f"• {ch}" for ch in unjoined)
+    msg = (
+        "⛔ *برای استفاده از ربات باید عضو کانال زیر باشید:*\n\n"
+        f"{channels_text}\n\n"
+        "بعد از عضویت روی دکمه *✅ عضو شدم* بزنید."
+    )
+    kb = _join_required_keyboard(unjoined)
+
+    if update.callback_query:
+        await update.callback_query.answer("ابتدا عضو کانال شوید!", show_alert=True)
+        await update.callback_query.message.reply_text(msg, parse_mode="Markdown", reply_markup=kb)
+    else:
+        await update.effective_message.reply_text(msg, parse_mode="Markdown", reply_markup=kb)
+
+    return False
+
+
 # ─── /start ───────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     upsert_user(user.id, user.username, user.full_name)
     context.user_data.clear()
+
+    if not await check_membership(update, context):
+        return MAIN_MENU
 
     text = (
         f"👋 سلام {user.first_name} عزیز!\n\n"
@@ -89,6 +151,14 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text
+
+    if text == "❌ انصراف":
+        context.user_data.clear()
+        await _send_to_main_menu(update, "منوی اصلی:")
+        return MAIN_MENU
+
+    if not await check_membership(update, context):
+        return MAIN_MENU
 
     if text == "🛒 خرید کانفیگ":
         msg = (
@@ -136,11 +206,6 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await show_about(update, context)
         return MAIN_MENU
 
-    if text == "❌ انصراف":
-        context.user_data.clear()
-        await _send_to_main_menu(update, "منوی اصلی:")
-        return MAIN_MENU
-
     return MAIN_MENU
 
 
@@ -150,6 +215,38 @@ async def handle_inline_main(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     data = query.data
+
+    # ── بررسی مجدد عضویت بعد از کلیک "عضو شدم" ──
+    if data == "check_join":
+        if not FORCE_JOIN_ENABLED or not FORCE_JOIN_CHANNELS:
+            await query.message.reply_text("✅ دسترسی تایید شد!", reply_markup=main_menu_kb())
+            return MAIN_MENU
+
+        unjoined = await _get_unjoined_channels(context.bot, query.from_user.id)
+        if unjoined:
+            channels_text = "\n".join(f"• {ch}" for ch in unjoined)
+            await query.answer("هنوز عضو نشدید!", show_alert=True)
+            await query.edit_message_text(
+                "❌ *هنوز عضو کانال زیر نشدید:*\n\n"
+                f"{channels_text}\n\n"
+                "بعد از عضویت دوباره بزنید.",
+                parse_mode="Markdown",
+                reply_markup=_join_required_keyboard(unjoined)
+            )
+        else:
+            await query.edit_message_text("✅ عضویت تایید شد!")
+            user = query.from_user
+            text = (
+                f"👋 سلام {user.first_name} عزیز!\n\n"
+                f"🌐 به *{BOT_NAME}* خوش آمدید!\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💰 قیمت: {fmt_price(PRICE_PER_GB)} / گیگابایت\n"
+                f"📦 حداقل: {MIN_GB} گیگ  |  حداکثر: {MAX_GB} گیگ\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "لطفاً از منوی زیر انتخاب کنید:"
+            )
+            await query.message.reply_text(text, parse_mode="Markdown", reply_markup=main_menu_kb())
+        return MAIN_MENU
 
     if data in GUIDES:
         await query.message.reply_text(GUIDES[data], reply_markup=guide_kb())

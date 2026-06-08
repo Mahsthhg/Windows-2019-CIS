@@ -30,3 +30,13 @@ DB_PATH = os.getenv("DB_PATH", "vpn_sales.db")
 # ─── Bot Info ─────────────────────────────────────────────────────────────────
 BOT_NAME    = os.getenv("BOT_NAME",    "VPN Pro Shop")
 BOT_CHANNEL = os.getenv("BOT_CHANNEL", "@your_channel")
+
+# ─── Force Join ───────────────────────────────────────────────────────────────
+# برای غیرفعال کردن: FORCE_JOIN_ENABLED=false
+FORCE_JOIN_ENABLED  = os.getenv("FORCE_JOIN_ENABLED", "false").lower() == "true"
+# چند کانال با کاما جدا کن: @chan1,@chan2
+FORCE_JOIN_CHANNELS = [
+    ch.strip()
+    for ch in os.getenv("FORCE_JOIN_CHANNELS", "").split(",")
+    if ch.strip()
+]
