@@ -61,17 +61,14 @@ async def check_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool
     missing = await _unjoined(context.bot, uid)
     if not missing:
         return True
-    txt = (
-        "⛔ *برای استفاده از ربات عضو کانال زیر شوید:*\n\n"
-        + "\n".join(f"• {c}" for c in missing)
-        + "\n\nبعد از عضویت روی *✅ عضو شدم* بزنید."
-    )
+    channels_text = "\n".join(f"• {c}" for c in missing)
+    txt = f"⛔ برای استفاده از ربات عضو کانال زیر شوید:\n\n{channels_text}\n\nبعد از عضویت روی ✅ عضو شدم بزنید."
     kb = join_required_kb(missing)
     if update.callback_query:
         await update.callback_query.answer("ابتدا عضو کانال شوید!", show_alert=True)
-        await update.callback_query.message.reply_text(txt, parse_mode="Markdown", reply_markup=kb)
+        await update.callback_query.message.reply_text(txt, reply_markup=kb)
     else:
-        await update.effective_message.reply_text(txt, parse_mode="Markdown", reply_markup=kb)
+        await update.effective_message.reply_text(txt, reply_markup=kb)
     return False
 
 
