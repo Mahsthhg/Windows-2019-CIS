@@ -18,7 +18,7 @@ from database import (
     create_order, create_ticket, get_discount_code, use_discount_code,
     get_wallet, deduct_wallet, create_wallet_charge,
     get_wallet_history, get_user_by_ref_code, mark_trial_used,
-    rate_order,
+    rate_order, get_bonus_mb, deduct_bonus_mb,
 )
 from keyboards import (
     main_menu_kb, cancel_reply_kb, cancel_inline_kb,
@@ -366,10 +366,12 @@ async def _show_order_confirm(msg_or_query, context: ContextTypes.DEFAULT_TYPE, 
     wallet_bal = get_wallet(user_id)
     wallet_ok = wallet_bal >= total_price
 
+    bonus_mb = get_bonus_mb(user_id)
     context.user_data.update({
         "selected_gb": gb,
         "total_price": total_price,
         "discount_pct": total_disc,
+        "bonus_mb": bonus_mb,
     })
 
     disc_lines = ""
@@ -379,6 +381,7 @@ async def _show_order_confirm(msg_or_query, context: ContextTypes.DEFAULT_TYPE, 
         disc_lines += f"🎁 کد تخفیف: {extra_disc}٪\n"
     if discount_amt:
         disc_lines += f"💸 مبلغ تخفیف: -{fmt(discount_amt)}\n"
+    bonus_line = f"🎁 بونوس معرفی: *+{bonus_mb} مگابایت* اضافه می‌شود\n" if bonus_mb else ""
 
     text = (
         "📋 *خلاصه سفارش*\n"
@@ -387,6 +390,7 @@ async def _show_order_confirm(msg_or_query, context: ContextTypes.DEFAULT_TYPE, 
         f"💰 قیمت پایه: {fmt(base_price)}\n"
         f"{disc_lines}"
         f"💳 *مبلغ نهایی: {fmt(total_price)}*\n"
+        f"{bonus_line}"
         f"💼 موجودی کیف پول: {fmt(wallet_bal)}\n"
         "━━━━━━━━━━━━━━━━━━━━━━"
     )

@@ -40,8 +40,9 @@ VIP_LEVELS = [
 ]
 
 # ─── Referral ─────────────────────────────────────────────────────────────────
-REFERRAL_BONUS_GB    = int(float(os.getenv("REFERRAL_BONUS_GB",   "5")))
-REFERRAL_BONUS_TOMAN = int(float(os.getenv("REFERRAL_BONUS_TOMAN", "0")))
+# جایزه معرفی — فقط یکی از دو حالت فعال باشد:
+REFERRAL_BONUS_MB    = int(float(os.getenv("REFERRAL_BONUS_MB",   "100")))  # مگابایت
+REFERRAL_BONUS_TOMAN = int(float(os.getenv("REFERRAL_BONUS_TOMAN", "0")))   # تومان کیف‌پول
 
 # ─── Free Trial ───────────────────────────────────────────────────────────────
 FREE_TRIAL_ENABLED = os.getenv("FREE_TRIAL_ENABLED", "false").lower() == "true"

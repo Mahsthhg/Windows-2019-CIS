@@ -24,6 +24,7 @@ def init_db() -> None:
             total_orders   INTEGER DEFAULT 0,
             total_spent    INTEGER DEFAULT 0,
             wallet_balance INTEGER DEFAULT 0,
+            bonus_mb       INTEGER DEFAULT 0,
             referral_code  TEXT    UNIQUE,
             referred_by    INTEGER,
             free_trial_used INTEGER DEFAULT 0,
@@ -331,7 +332,7 @@ def approve_order(order_id: int, config: str, sub_link: str,
 
 def _check_referral_bonus(db, user_id: int, order_id: int):
     """اگر اولین خرید موفق کاربر است، به هر دو طرف جایزه بده."""
-    from config import REFERRAL_BONUS_GB, REFERRAL_BONUS_TOMAN
+    from config import REFERRAL_BONUS_MB, REFERRAL_BONUS_TOMAN
     approved_count = db.execute(
         "SELECT COUNT(*) FROM orders WHERE user_id=? AND status='approved'",
         (user_id,)
@@ -345,6 +346,7 @@ def _check_referral_bonus(db, user_id: int, order_id: int):
     if not ref:
         return
     if REFERRAL_BONUS_TOMAN > 0:
+        # جایزه تومانی — اضافه به کیف پول
         db.execute("UPDATE users SET wallet_balance=wallet_balance+? WHERE user_id=?",
                    (REFERRAL_BONUS_TOMAN, ref["referrer_id"]))
         db.execute("UPDATE users SET wallet_balance=wallet_balance+? WHERE user_id=?",
@@ -353,7 +355,26 @@ def _check_referral_bonus(db, user_id: int, order_id: int):
                    (ref["referrer_id"], REFERRAL_BONUS_TOMAN))
         db.execute("INSERT INTO wallet_transactions (user_id,amount,type,note,status) VALUES (?,?,'referral_bonus','جایزه معرفی دوستان','approved')",
                    (user_id, REFERRAL_BONUS_TOMAN))
+    elif REFERRAL_BONUS_MB > 0:
+        # جایزه مگابایتی — اضافه به موجودی بونوس
+        db.execute("UPDATE users SET bonus_mb=bonus_mb+? WHERE user_id=?",
+                   (REFERRAL_BONUS_MB, ref["referrer_id"]))
+        db.execute("UPDATE users SET bonus_mb=bonus_mb+? WHERE user_id=?",
+                   (REFERRAL_BONUS_MB, user_id))
     db.execute("UPDATE referrals SET bonus_given=1 WHERE id=?", (ref["id"],))
+
+
+def get_bonus_mb(user_id: int) -> int:
+    db = _conn()
+    r = db.execute("SELECT bonus_mb FROM users WHERE user_id=?", (user_id,)).fetchone()
+    db.close()
+    return r["bonus_mb"] if r else 0
+
+
+def deduct_bonus_mb(user_id: int, mb: int):
+    db = _conn()
+    db.execute("UPDATE users SET bonus_mb=MAX(0, bonus_mb-?) WHERE user_id=?", (mb, user_id))
+    db.commit(); db.close()
 
 
 def reject_order(order_id: int, note: str = "") -> dict | None:
