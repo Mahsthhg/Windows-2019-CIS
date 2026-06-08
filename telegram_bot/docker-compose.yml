@@ -1,0 +1,10 @@
+services:
+  bot:
+    build: .
+    container_name: media-downloader-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./downloads:/app/downloads
+      # Uncomment if you use a cookies file for age-restricted content:
+      # - ./cookies.txt:/app/cookies.txt:ro

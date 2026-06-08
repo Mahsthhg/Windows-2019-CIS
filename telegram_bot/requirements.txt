@@ -1,0 +1,11 @@
+# ===== Core =====
+python-telegram-bot[job-queue]==21.9
+
+# ===== Download engines =====
+yt-dlp>=2024.12.13          # YouTube, Instagram, PornHub, TikTok, SoundCloud, +1000 sites
+spotdl>=4.2.10              # Spotify (downloads audio via YouTube source)
+
+# ===== Helpers =====
+python-dotenv>=1.0.1        # load configuration from .env
+mutagen>=1.47.0            # audio metadata / tagging
+humanize>=4.11.0          # human-friendly sizes & durations

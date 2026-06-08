@@ -1,0 +1,3 @@
+"""Telegram Media Downloader Bot package."""
+
+__version__ = "1.0.0"
