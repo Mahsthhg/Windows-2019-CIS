@@ -561,6 +561,38 @@ def get_stats() -> dict:
     return s
 
 
+def get_referral_stats() -> list[dict]:
+    """لیدربورد زیرمجموعه — ۱۵ نفر برتر بر اساس تعداد زیرمجموعه."""
+    db = _conn()
+    rows = db.execute("""
+        SELECT u.user_id, u.username, u.full_name,
+               COUNT(r.id) AS total_refs,
+               SUM(CASE WHEN r.bonus_given=1 THEN 1 ELSE 0 END) AS paid_refs
+        FROM users u
+        LEFT JOIN referrals r ON r.referrer_id = u.user_id
+        GROUP BY u.user_id
+        HAVING total_refs > 0
+        ORDER BY total_refs DESC
+        LIMIT 15
+    """).fetchall()
+    db.close()
+    return [dict(r) for r in rows]
+
+
+def get_user_referrals(user_id: int) -> list[dict]:
+    """زیرمجموعه‌های یک کاربر."""
+    db = _conn()
+    rows = db.execute("""
+        SELECT r.*, u.full_name, u.username
+        FROM referrals r
+        JOIN users u ON u.user_id = r.referee_id
+        WHERE r.referrer_id = ?
+        ORDER BY r.created_at DESC
+    """, (user_id,)).fetchall()
+    db.close()
+    return [dict(r) for r in rows]
+
+
 def export_orders_csv() -> str:
     db = _conn()
     rows = db.execute("SELECT * FROM orders ORDER BY created_at DESC LIMIT 1000").fetchall()

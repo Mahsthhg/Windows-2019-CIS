@@ -71,6 +71,9 @@ FORCE_JOIN_CHANNELS = [
     if ch.strip()
 ]
 
+# ─── Captcha ──────────────────────────────────────────────────────────────────
+CAPTCHA_ENABLED = os.getenv("CAPTCHA_ENABLED", "true").lower() == "true"
+
 # ─── Anti-spam ────────────────────────────────────────────────────────────────
 RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "15"))
 

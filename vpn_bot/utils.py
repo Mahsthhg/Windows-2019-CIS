@@ -1,6 +1,12 @@
-"""Shared helpers: VIP, rate limiting, formatting."""
+"""Shared helpers: VIP, rate limiting, formatting, HTML escaping."""
+import html
 import time
 from config import VIP_LEVELS, RATE_LIMIT_PER_MINUTE
+
+
+def h(text) -> str:
+    """HTML-escape برای جلوگیری از باگ parse_mode HTML."""
+    return html.escape(str(text) if text is not None else "")
 
 # ─── VIP ──────────────────────────────────────────────────────────────────────
 

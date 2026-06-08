@@ -1,10 +1,11 @@
-"""Entry point — هر دو ربات + زمان‌بند را اجرا می‌کند."""
+"""Entry point v2 — هر دو ربات + زمان‌بند + persistence."""
 import asyncio
 import logging
 import sys
-from telegram.ext import Application
+from telegram.ext import Application, PicklePersistence
 from config import CUSTOMER_BOT_TOKEN, ADMIN_BOT_TOKEN, ADMIN_CHAT_ID, ADMIN_IDS
 from database import init_db
+from settings_manager import init_settings
 from customer_bot import setup_customer_bot
 from admin_bot import setup_admin_bot
 from scheduler import setup_scheduler
@@ -39,11 +40,14 @@ def _check_config():
 async def run() -> None:
     _check_config()
     init_db()
-    logger.info("✅ دیتابیس آماده شد.")
+    init_settings()
+    logger.info("✅ دیتابیس و تنظیمات آماده شد.")
 
+    customer_persistence = PicklePersistence(filepath="customer_state.pkl")
     customer_app = (
         Application.builder()
         .token(CUSTOMER_BOT_TOKEN)
+        .persistence(customer_persistence)
         .connect_timeout(30).read_timeout(30).write_timeout(30).pool_timeout(30)
         .build()
     )
