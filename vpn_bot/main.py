@@ -43,11 +43,23 @@ async def run() -> None:
     init_settings()
     logger.info("✅ دیتابیس و تنظیمات آماده شد.")
 
+    # Holder lets post_init reference admin_app which is built after customer_app
+    class _BotHolder:
+        admin_bot = None
+
+    holder = _BotHolder()
+
+    async def _reinject_admin(app: Application) -> None:
+        """Re-inject admin_bot_instance after PicklePersistence overwrites bot_data."""
+        if holder.admin_bot:
+            app.bot_data["admin_bot_instance"] = holder.admin_bot
+
     customer_persistence = PicklePersistence(filepath="customer_state.pkl")
     customer_app = (
         Application.builder()
         .token(CUSTOMER_BOT_TOKEN)
         .persistence(customer_persistence)
+        .post_init(_reinject_admin)
         .connect_timeout(30).read_timeout(30).write_timeout(30).pool_timeout(30)
         .build()
     )
@@ -57,6 +69,8 @@ async def run() -> None:
         .connect_timeout(30).read_timeout(30).write_timeout(30).pool_timeout(30)
         .build()
     )
+
+    holder.admin_bot = admin_app.bot
 
     setup_customer_bot(customer_app, admin_bot_instance=admin_app.bot)
     setup_admin_bot(admin_app, customer_bot_instance=customer_app.bot)
