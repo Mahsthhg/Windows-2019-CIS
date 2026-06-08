@@ -972,13 +972,14 @@ async def deliver_config(customer_bot, order: dict, config: str, sub_link: str):
     uid = order["user_id"]
     is_trial = order.get("is_trial", 0)
     title = "آزمایش رایگان" if is_trial else "سفارش"
+    trial_header = "🎯 <b>آزمایش رایگان</b>\n" if is_trial else ""
     expiry_line = f"📅 انقضا: <code>{order.get('expiry_date','—')}</code>\n" if order.get("expiry_date") else ""
 
     try:
         await customer_bot.send_message(
             uid,
             f"🎉 <b>{title} شما تایید شد!</b>\n"
-            f"{'🎯 <b>آزمایش رایگان</b>\n' if is_trial else ''}\n"
+            f"{trial_header}\n"
             f"🆔 سفارش #{order['id']}\n"
             f"📦 {fmt_gb(order['gb_amount'])}\n"
             f"{expiry_line}"
