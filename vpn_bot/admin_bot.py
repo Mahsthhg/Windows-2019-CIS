@@ -1,54 +1,59 @@
-"""
-Admin management Telegram bot.
-Handles: order approval/rejection, support replies,
-         broadcasts, statistics, user management, discount codes.
-"""
+"""ربات ادمین — مدیریت سفارشات، کیف پول، قالب‌ها، آمار، پیام همگانی."""
 import logging
 import re
+from io import BytesIO, StringIO
 from telegram import Update, Bot
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    filters, ContextTypes,
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, filters, ContextTypes,
 )
-from config import ADMIN_CHAT_ID, PRICE_PER_GB, BOT_NAME
+from config import ADMIN_IDS, PRICE_PER_GB, BOT_NAME, PANEL_ENABLED, PANEL_DEFAULT_DAYS
 from database import (
-    get_order, get_pending_orders, get_all_users,
-    get_user, approve_order, reject_order,
-    get_stats, close_ticket, get_ticket,
-    block_user, unblock_user, create_discount_code,
+    get_order, get_pending_orders, get_all_users, get_user,
+    approve_order, reject_order, get_stats, close_ticket, get_open_tickets,
+    block_user, unblock_user, create_discount_code, add_order_note,
+    get_templates, get_template, save_template, delete_template, use_template,
+    approve_wallet_charge, reject_wallet_charge, get_pending_wallet_charges,
+    admin_adjust_wallet, search_orders, export_orders_csv,
 )
-from keyboards import admin_main_kb, admin_cancel_kb, admin_new_order_kb
+from keyboards import (
+    admin_main_kb, admin_cancel_kb, admin_order_kb,
+    admin_wallet_kb, admin_templates_kb,
+)
+from utils import fmt, fmt_gb, fmt_dt, get_vip, STATUS_EMOJI, STATUS_LABEL, STAR_MAP
 
 logger = logging.getLogger(__name__)
 
-# ─── Admin state keys (stored in context.user_data) ──────────────────────────
-STATE         = "adm_state"
-PENDING_ORDER = "adm_pending_order"
-PENDING_CONFIG= "adm_pending_config"
+# ─── State keys ───────────────────────────────────────────────────────────────
+ST          = "adm_st"
+PENDING_OID = "adm_oid"
+PENDING_CFG = "adm_cfg"
 
-S_IDLE              = "idle"
-S_WAIT_CONFIG       = "wait_config"
-S_WAIT_SUB          = "wait_sub"
-S_WAIT_REJECT_NOTE  = "wait_reject_note"
-S_WAIT_BROADCAST    = "wait_broadcast"
-S_WAIT_DISCOUNT     = "wait_discount"
+S_IDLE          = "idle"
+S_WAIT_CFG      = "wait_cfg"
+S_WAIT_SUB      = "wait_sub"
+S_WAIT_EXPIRY   = "wait_expiry"
+S_WAIT_REJECT   = "wait_reject"
+S_WAIT_BROADCAST= "wait_broadcast"
+S_WAIT_DISCOUNT = "wait_discount"
+S_WAIT_TPL_NAME = "wait_tpl_name"
+S_WAIT_TPL_CFG  = "wait_tpl_cfg"
+S_WAIT_TPL_SUB  = "wait_tpl_sub"
+S_WAIT_SEARCH   = "wait_search"
+S_WAIT_NOTE     = "wait_note"
+S_WAIT_WALLET_ADJ = "wait_wallet_adj"
 
-def fmt_price(p: int) -> str:
-    return f"{p:,} تومان"
 
-def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_CHAT_ID
+def is_admin(uid: int) -> bool:
+    return uid in ADMIN_IDS
 
 
-# ─── Guard decorator ──────────────────────────────────────────────────────────
-
-def admin_only(func):
+def admin_only(fn):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        uid = update.effective_user.id
-        if not is_admin(uid):
-            await update.effective_message.reply_text("⛔ شما دسترسی ادمین ندارید.")
+        if not is_admin(update.effective_user.id):
+            await update.effective_message.reply_text("⛔ دسترسی مجاز نیست.")
             return
-        return await func(update, context)
+        return await fn(update, context)
     return wrapper
 
 
@@ -56,17 +61,28 @@ def admin_only(func):
 
 @admin_only
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data[STATE] = S_IDLE
+    context.user_data[ST] = S_IDLE
+    s = get_stats()
     await update.message.reply_text(
-        f"👑 *پنل مدیریت — {BOT_NAME}*\n\n"
-        "به ربات ادمین خوش آمدید.\n"
-        "سفارشات جدید به صورت خودکار اینجا ارسال می‌شوند.",
+        f"👑 *پنل ادمین — {BOT_NAME}*\n\n"
+        f"⏳ سفارش در انتظار: {s['pending_orders']}\n"
+        f"💬 تیکت باز: {s['open_tickets']}\n"
+        f"👥 کاربران: {s['total_users']:,}\n\n"
+        "سفارشات جدید به‌صورت خودکار اطلاع‌رسانی می‌شوند.",
         parse_mode="Markdown",
         reply_markup=admin_main_kb()
     )
 
 
-# ─── Inline callback handler (order approve/reject buttons) ───────────────────
+@admin_only
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[ST] = S_IDLE
+    context.user_data.pop(PENDING_OID, None)
+    context.user_data.pop(PENDING_CFG, None)
+    await update.message.reply_text("❌ لغو شد.", reply_markup=admin_main_kb())
+
+
+# ─── Callback handler ─────────────────────────────────────────────────────────
 
 @admin_only
 async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -75,11 +91,11 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "adm_cancel":
-        context.user_data[STATE] = S_IDLE
-        await query.message.reply_text("❌ عملیات لغو شد.", reply_markup=admin_main_kb())
+        context.user_data[ST] = S_IDLE
+        await query.message.reply_text("❌ لغو شد.", reply_markup=admin_main_kb())
         return
 
-    # ── Approve order ──
+    # ── Order approve ──
     if data.startswith("adm_approve_"):
         order_id = int(data.split("_")[2])
         order = get_order(order_id)
@@ -87,67 +103,141 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ سفارش پیدا نشد.")
             return
         if order["status"] != "pending":
-            await query.message.reply_text(f"⚠️ سفارش #{order_id} قبلاً پردازش شده.")
+            await query.answer(f"وضعیت: {STATUS_LABEL.get(order['status'])}", show_alert=True)
             return
-
-        context.user_data[STATE]         = S_WAIT_CONFIG
-        context.user_data[PENDING_ORDER] = order_id
-
+        context.user_data[ST] = S_WAIT_EXPIRY
+        context.user_data[PENDING_OID] = order_id
         await query.edit_message_reply_markup(reply_markup=None)
-        await query.message.reply_text(
-            f"✅ سفارش *#{order_id}* در حال تایید است.\n\n"
-            "📤 لطفاً کانفیگ VLESS را ارسال کنید:\n"
-            "(یا /cancel برای لغو)",
-            parse_mode="Markdown",
-            reply_markup=admin_cancel_kb()
-        )
 
-    # ── Reject order ──
-    elif data.startswith("adm_reject_"):
+        if PANEL_ENABLED:
+            await query.message.reply_text(
+                f"✅ سفارش *#{order_id}* در حال تایید\n\n"
+                "🤖 تعداد روز انقضا را وارد کنید (پیش‌فرض: "
+                f"{PANEL_DEFAULT_DAYS}):\n"
+                "(یا `-` برای پیش‌فرض)\n(/cancel برای لغو)",
+                parse_mode="Markdown", reply_markup=admin_cancel_kb()
+            )
+        else:
+            templates = get_templates()
+            if templates:
+                await query.message.reply_text(
+                    f"✅ سفارش *#{order_id}* — قالب کانفیگ را انتخاب کنید:",
+                    parse_mode="Markdown",
+                    reply_markup=admin_templates_kb(templates)
+                )
+            else:
+                context.user_data[ST] = S_WAIT_CFG
+                await query.message.reply_text(
+                    f"✅ سفارش *#{order_id}*\n\n📤 کانفیگ VLESS را ارسال کنید:\n(/cancel)",
+                    parse_mode="Markdown", reply_markup=admin_cancel_kb()
+                )
+        return
+
+    # ── Template selection for order ──
+    if data.startswith("adm_tpl_"):
+        order_id = context.user_data.get(PENDING_OID)
+        if not order_id:
+            await query.answer("خطا: سفارشی انتخاب نشده.", show_alert=True)
+            return
+        if data == "adm_tpl_manual":
+            context.user_data[ST] = S_WAIT_CFG
+            await query.edit_message_text(
+                "📤 کانفیگ VLESS را ارسال کنید:", reply_markup=admin_cancel_kb()
+            )
+            return
+        tpl_id = int(data.split("_")[2])
+        tpl = get_template(tpl_id)
+        if not tpl:
+            await query.answer("قالب پیدا نشد.", show_alert=True)
+            return
+        use_template(tpl_id)
+        order = get_order(order_id)
+        result = approve_order(order_id, tpl["config"], tpl.get("sub_link",""))
+        customer_bot = context.bot_data.get("customer_bot_instance")
+        if customer_bot and order:
+            from customer_bot import deliver_config
+            order["config"]    = tpl["config"]
+            order["sub_link"]  = tpl.get("sub_link","")
+            await deliver_config(customer_bot, order, tpl["config"], tpl.get("sub_link",""))
+        await query.edit_message_text(
+            f"✅ سفارش *#{order_id}* تایید شد (قالب: {tpl['name']}).",
+            parse_mode="Markdown"
+        )
+        return
+
+    # ── Order reject ──
+    if data.startswith("adm_reject_"):
         order_id = int(data.split("_")[2])
         order = get_order(order_id)
-        if not order:
-            await query.message.reply_text("❌ سفارش پیدا نشد.")
+        if not order or order["status"] != "pending":
+            await query.answer("قابل رد نیست.", show_alert=True)
             return
-        if order["status"] != "pending":
-            await query.message.reply_text(f"⚠️ سفارش #{order_id} قبلاً پردازش شده.")
-            return
-
-        context.user_data[STATE]         = S_WAIT_REJECT_NOTE
-        context.user_data[PENDING_ORDER] = order_id
-
+        context.user_data[ST] = S_WAIT_REJECT
+        context.user_data[PENDING_OID] = order_id
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text(
-            f"❌ دلیل رد سفارش *#{order_id}* را وارد کنید:\n"
-            "(یا - برای رد بدون دلیل)\n"
-            "(یا /cancel برای لغو)",
-            parse_mode="Markdown",
-            reply_markup=admin_cancel_kb()
+            f"❌ دلیل رد سفارش *#{order_id}* را بنویسید:\n(یا `-` بدون دلیل)\n(/cancel)",
+            parse_mode="Markdown", reply_markup=admin_cancel_kb()
         )
+        return
+
+    # ── Order note ──
+    if data.startswith("adm_note_"):
+        order_id = int(data.split("_")[2])
+        context.user_data[ST] = S_WAIT_NOTE
+        context.user_data[PENDING_OID] = order_id
+        await query.message.reply_text(
+            f"📝 یادداشت برای سفارش #{order_id}:", reply_markup=admin_cancel_kb()
+        )
+        return
 
     # ── User profile ──
-    elif data.startswith("adm_profile_"):
+    if data.startswith("adm_profile_"):
         order_id = int(data.split("_")[2])
         order = get_order(order_id)
         if not order:
-            await query.message.reply_text("❌ سفارش پیدا نشد.")
             return
-        user = get_user(order["user_id"])
-        if not user:
-            await query.message.reply_text("❌ کاربر پیدا نشد.")
-            return
-        uname = f"@{user['username']}" if user.get("username") else "—"
-        text = (
-            f"👤 *پروفایل کاربر*\n\n"
-            f"🆔 آیدی: `{user['user_id']}`\n"
-            f"👤 نام: {user['full_name']}\n"
-            f"🔗 یوزرنیم: {uname}\n"
-            f"📅 تاریخ عضویت: {user['join_date'][:10]}\n"
-            f"🛍️ تعداد سفارشات: {user['total_orders']}\n"
-            f"💰 کل خرید: {fmt_price(user['total_spent'])}\n"
-            f"🚫 مسدود: {'بله' if user['is_blocked'] else 'خیر'}"
-        )
-        await query.message.reply_text(text, parse_mode="Markdown")
+        await _show_user_profile(query.message, order["user_id"])
+        return
+
+    # ── Wallet approve/reject ──
+    if data.startswith("adm_wapprove_"):
+        tx_id = int(data.split("_")[2])
+        tx = approve_wallet_charge(tx_id)
+        if tx:
+            customer_bot = context.bot_data.get("customer_bot_instance")
+            if customer_bot:
+                try:
+                    await customer_bot.send_message(
+                        tx["user_id"],
+                        f"✅ شارژ *{fmt(tx['amount'])}* به کیف پول شما اضافه شد!",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    logger.error("Wallet approve notify: %s", e)
+            await query.edit_message_caption(
+                caption=(query.message.caption or "") + f"\n\n✅ تایید شد — {fmt(tx['amount'])}"
+            )
+        return
+
+    if data.startswith("adm_wreject_"):
+        tx_id = int(data.split("_")[2])
+        tx = reject_wallet_charge(tx_id)
+        if tx:
+            customer_bot = context.bot_data.get("customer_bot_instance")
+            if customer_bot:
+                try:
+                    await customer_bot.send_message(
+                        tx["user_id"],
+                        f"❌ درخواست شارژ {fmt(tx['amount'])} رد شد.",
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    logger.error("Wallet reject notify: %s", e)
+            await query.edit_message_caption(
+                caption=(query.message.caption or "") + "\n\n❌ رد شد"
+            )
+        return
 
 
 # ─── Text message handler ─────────────────────────────────────────────────────
@@ -155,91 +245,135 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_only
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    state = context.user_data.get(STATE, S_IDLE)
+    state = context.user_data.get(ST, S_IDLE)
 
-    # ── Await config ──
-    if state == S_WAIT_CONFIG:
-        context.user_data[PENDING_CONFIG] = text
-        context.user_data[STATE] = S_WAIT_SUB
+    # ── State machine ──
+
+    if state == S_WAIT_EXPIRY:
+        days = PANEL_DEFAULT_DAYS
+        if text.strip() != "-":
+            try:
+                days = int(text.strip())
+            except ValueError:
+                await update.message.reply_text("عدد وارد کنید یا `-` برای پیش‌فرض:")
+                return
+        order_id = context.user_data.get(PENDING_OID)
+        if PANEL_ENABLED:
+            order = get_order(order_id)
+            if order:
+                try:
+                    from panel_api import marzban
+                    import re as _re
+                    safe_name = "user" + str(order_id) + _re.sub(r'\W', '', (order.get("username") or "x"))[:8]
+                    result = await marzban.create_user(safe_name, order["gb_amount"], days)
+                    config   = result["config"]
+                    sub_link = result["sub_link"]
+                    expiry   = result["expiry_date"]
+                    panel_un = result["panel_user"]
+                    approve_order(order_id, config, sub_link, expiry, panel_un)
+                    customer_bot = context.bot_data.get("customer_bot_instance")
+                    if customer_bot:
+                        order.update({"config": config, "sub_link": sub_link,
+                                      "expiry_date": expiry, "panel_username": panel_un})
+                        from customer_bot import deliver_config
+                        await deliver_config(customer_bot, order, config, sub_link)
+                    await update.message.reply_text(
+                        f"✅ سفارش *#{order_id}* تایید شد (Marzban).\n"
+                        f"👤 پنل: `{panel_un}`\n📅 انقضا: {expiry}",
+                        parse_mode="Markdown", reply_markup=admin_main_kb()
+                    )
+                except Exception as e:
+                    logger.error("Panel create_user: %s", e)
+                    await update.message.reply_text(
+                        f"❌ خطای پنل: {e}\n\nکانفیگ را دستی ارسال کنید:",
+                        reply_markup=admin_cancel_kb()
+                    )
+                    context.user_data[ST] = S_WAIT_CFG
+                    return
+        else:
+            context.user_data["expiry_days"] = days
+            context.user_data[ST] = S_WAIT_CFG
+            await update.message.reply_text(
+                "📤 کانفیگ VLESS را ارسال کنید:", reply_markup=admin_cancel_kb()
+            )
+            return
+        context.user_data[ST] = S_IDLE
+        return
+
+    if state == S_WAIT_CFG:
+        context.user_data[PENDING_CFG] = text.strip()
+        context.user_data[ST] = S_WAIT_SUB
         await update.message.reply_text(
-            "🔗 لطفاً لینک Subscription را ارسال کنید:\n"
-            "(یا `-` اگر ندارید)",
+            "🔗 لینک Subscription را ارسال کنید:\n(یا `-` اگر ندارید)",
             reply_markup=admin_cancel_kb()
         )
         return
 
-    # ── Await sub link ──
     if state == S_WAIT_SUB:
-        order_id = context.user_data.get(PENDING_ORDER)
-        config   = context.user_data.get(PENDING_CONFIG, "")
+        order_id = context.user_data.get(PENDING_OID)
+        config   = context.user_data.get(PENDING_CFG, "")
         sub_link = "" if text.strip() == "-" else text.strip()
 
+        from datetime import datetime, timedelta
+        days = context.user_data.get("expiry_days", 0)
+        expiry = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d") if days else None
+
         order = get_order(order_id)
         if not order:
             await update.message.reply_text("❌ سفارش پیدا نشد.")
-            context.user_data[STATE] = S_IDLE
-            return
+            context.user_data[ST] = S_IDLE; return
 
-        approve_order(order_id, config, sub_link)
+        approve_order(order_id, config, sub_link, expiry)
 
-        # Send config to customer
-        customer_bot: Bot = context.bot_data.get("customer_bot_instance")
+        customer_bot = context.bot_data.get("customer_bot_instance")
         if customer_bot:
-            await _deliver_config_to_customer(customer_bot, order, config, sub_link)
+            order.update({"config": config, "sub_link": sub_link, "expiry_date": expiry})
+            from customer_bot import deliver_config
+            await deliver_config(customer_bot, order, config, sub_link)
 
         await update.message.reply_text(
-            f"✅ سفارش *#{order_id}* تایید شد و کانفیگ برای مشتری ارسال گردید.",
-            parse_mode="Markdown",
-            reply_markup=admin_main_kb()
+            f"✅ سفارش *#{order_id}* تایید شد و کانفیگ ارسال گردید.",
+            parse_mode="Markdown", reply_markup=admin_main_kb()
         )
-        context.user_data[STATE] = S_IDLE
-        context.user_data.pop(PENDING_ORDER, None)
-        context.user_data.pop(PENDING_CONFIG, None)
+        context.user_data[ST] = S_IDLE
+        context.user_data.pop(PENDING_OID, None)
+        context.user_data.pop(PENDING_CFG, None)
         return
 
-    # ── Await reject note ──
-    if state == S_WAIT_REJECT_NOTE:
-        order_id = context.user_data.get(PENDING_ORDER)
+    if state == S_WAIT_REJECT:
+        order_id = context.user_data.get(PENDING_OID)
         note = "" if text.strip() == "-" else text.strip()
-
         order = get_order(order_id)
         if not order:
             await update.message.reply_text("❌ سفارش پیدا نشد.")
-            context.user_data[STATE] = S_IDLE
-            return
-
+            context.user_data[ST] = S_IDLE; return
         reject_order(order_id, note)
-
-        customer_bot: Bot = context.bot_data.get("customer_bot_instance")
+        customer_bot = context.bot_data.get("customer_bot_instance")
         if customer_bot:
-            reason_line = f"\n\n❗ دلیل: {note}" if note else ""
+            reason = f"\n\n❗ دلیل: {note}" if note else ""
             try:
                 await customer_bot.send_message(
-                    chat_id=order["user_id"],
-                    text=(
-                        f"❌ سفارش *#{order_id}* رد شد.{reason_line}\n\n"
-                        "در صورت نیاز به پشتیبانی مراجعه کنید."
-                    ),
+                    order["user_id"],
+                    f"❌ سفارش *#{order_id}* رد شد.{reason}",
                     parse_mode="Markdown"
                 )
             except Exception as e:
-                logger.error("Failed to notify customer: %s", e)
-
+                logger.error("Reject notify: %s", e)
         await update.message.reply_text(
-            f"❌ سفارش *#{order_id}* رد شد.",
-            parse_mode="Markdown",
-            reply_markup=admin_main_kb()
+            f"❌ سفارش *#{order_id}* رد شد.", parse_mode="Markdown", reply_markup=admin_main_kb()
         )
-        context.user_data[STATE] = S_IDLE
-        context.user_data.pop(PENDING_ORDER, None)
-        return
+        context.user_data[ST] = S_IDLE; return
 
-    # ── Await broadcast ──
+    if state == S_WAIT_NOTE:
+        order_id = context.user_data.get(PENDING_OID)
+        add_order_note(order_id, text)
+        await update.message.reply_text(f"📝 یادداشت ثبت شد.", reply_markup=admin_main_kb())
+        context.user_data[ST] = S_IDLE; return
+
     if state == S_WAIT_BROADCAST:
         users = get_all_users()
-        sent = 0
-        failed = 0
-        customer_bot: Bot = context.bot_data.get("customer_bot_instance")
+        customer_bot = context.bot_data.get("customer_bot_instance")
+        sent = failed = 0
         if customer_bot:
             for u in users:
                 try:
@@ -247,23 +381,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     sent += 1
                 except Exception:
                     failed += 1
-
         await update.message.reply_text(
-            f"📢 پیام همگانی ارسال شد.\n"
-            f"✅ موفق: {sent}\n❌ ناموفق: {failed}",
+            f"📢 پیام ارسال شد.\n✅ موفق: {sent}\n❌ ناموفق: {failed}",
             reply_markup=admin_main_kb()
         )
-        context.user_data[STATE] = S_IDLE
-        return
+        context.user_data[ST] = S_IDLE; return
 
-    # ── Await discount code creation ──
     if state == S_WAIT_DISCOUNT:
         parts = text.strip().split()
         if len(parts) < 2:
-            await update.message.reply_text(
-                "❌ فرمت اشتباه. ارسال کنید:\n`CODE PERCENT [MAX_USES]`\nمثال: `PROMO10 10 50`",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text("فرمت: `CODE PERCENT [MAX_USES]`", parse_mode="Markdown")
             return
         code = parts[0].upper()
         try:
@@ -274,45 +401,93 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         create_discount_code(code, pct, uses)
         await update.message.reply_text(
-            f"✅ کد تخفیف *{code}* با {pct}٪ تخفیف (max {uses} استفاده) ایجاد شد.",
-            parse_mode="Markdown",
-            reply_markup=admin_main_kb()
+            f"✅ کد `{code}` | {pct}٪ | {uses} بار\nساخته شد.",
+            parse_mode="Markdown", reply_markup=admin_main_kb()
         )
-        context.user_data[STATE] = S_IDLE
+        context.user_data[ST] = S_IDLE; return
+
+    if state == S_WAIT_TPL_NAME:
+        context.user_data["tpl_name"] = text.strip()
+        context.user_data[ST] = S_WAIT_TPL_CFG
+        await update.message.reply_text("📤 کانفیگ VLESS را وارد کنید:", reply_markup=admin_cancel_kb())
         return
 
+    if state == S_WAIT_TPL_CFG:
+        context.user_data["tpl_config"] = text.strip()
+        context.user_data[ST] = S_WAIT_TPL_SUB
+        await update.message.reply_text("🔗 لینک Sub را وارد کنید (یا `-`):", reply_markup=admin_cancel_kb())
+        return
+
+    if state == S_WAIT_TPL_SUB:
+        name   = context.user_data.get("tpl_name")
+        config = context.user_data.get("tpl_config")
+        sub    = "" if text.strip() == "-" else text.strip()
+        save_template(name, config, sub)
+        await update.message.reply_text(
+            f"✅ قالب *{name}* ذخیره شد.", parse_mode="Markdown", reply_markup=admin_main_kb()
+        )
+        context.user_data[ST] = S_IDLE; return
+
+    if state == S_WAIT_SEARCH:
+        results = search_orders(text.strip())
+        if not results:
+            await update.message.reply_text("❌ نتیجه‌ای پیدا نشد.", reply_markup=admin_main_kb())
+        else:
+            out = f"🔍 *نتایج جستجو* ({len(results)})\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            for o in results:
+                st_e = STATUS_EMOJI.get(o["status"], "?")
+                out += f"{st_e} #{o['id']} | {o['full_name']} | {fmt_gb(o['gb_amount'])} | {fmt(o['total_price'])}\n"
+            await update.message.reply_text(out, parse_mode="Markdown", reply_markup=admin_main_kb())
+        context.user_data[ST] = S_IDLE; return
+
+    if state == S_WAIT_WALLET_ADJ:
+        parts = text.strip().split(maxsplit=1)
+        try:
+            uid    = int(parts[0])
+            amount = int(parts[1]) if len(parts) > 1 else 0
+            if amount == 0:
+                raise ValueError
+        except (ValueError, IndexError):
+            await update.message.reply_text("فرمت: `USER_ID AMOUNT`\nمثال: `123456 50000`",
+                                            parse_mode="Markdown")
+            return
+        admin_adjust_wallet(uid, amount)
+        customer_bot = context.bot_data.get("customer_bot_instance")
+        if customer_bot:
+            try:
+                sign = "+" if amount > 0 else ""
+                await customer_bot.send_message(
+                    uid, f"💼 کیف پول شما {sign}{fmt(amount)} تنظیم شد توسط ادمین."
+                )
+            except Exception:
+                pass
+        await update.message.reply_text(
+            f"✅ کیف پول کاربر `{uid}` → {fmt(amount)}", parse_mode="Markdown",
+            reply_markup=admin_main_kb()
+        )
+        context.user_data[ST] = S_IDLE; return
+
     # ── Menu buttons ──
-    if text == "📊 آمار کلی":
-        await show_stats(update, context)
-    elif text == "📋 سفارشات در انتظار":
-        await show_pending(update, context)
-    elif text == "📢 پیام همگانی":
-        context.user_data[STATE] = S_WAIT_BROADCAST
-        await update.message.reply_text(
-            "📢 پیام همگانی را ارسال کنید:\n(از Markdown پشتیبانی می‌شود)\n(یا /cancel)",
-            reply_markup=admin_cancel_kb()
-        )
-    elif text == "👥 مدیریت کاربران":
-        await show_users(update, context)
-    elif text == "🎫 ایجاد کد تخفیف":
-        context.user_data[STATE] = S_WAIT_DISCOUNT
-        await update.message.reply_text(
-            "🎫 کد تخفیف جدید\n\n"
-            "فرمت: `CODE PERCENT [MAX_USES]`\n"
-            "مثال: `VIP20 20 10`\n"
-            "(یا /cancel)",
-            parse_mode="Markdown",
-            reply_markup=admin_cancel_kb()
-        )
-    elif text == "💰 گزارش درآمد":
-        await show_revenue(update, context)
-    elif text == "🎫 تیکت‌های باز":
-        await show_open_tickets(update, context)
-    elif text == "⚙️ راهنما":
-        await show_help(update, context)
+    menu_handlers = {
+        "📊 آمار کلی":           show_stats,
+        "📋 سفارشات در انتظار":  show_pending,
+        "💰 شارژ کیف‌پول‌ها":   show_pending_wallets,
+        "💬 تیکت‌های باز":       show_tickets,
+        "📋 قالب‌های کانفیگ":   show_templates,
+        "🔍 جستجو":              start_search,
+        "📢 پیام همگانی":        start_broadcast,
+        "👥 کاربران":            show_users,
+        "🎫 کد تخفیف":          start_discount,
+        "📤 خروجی CSV":          export_csv,
+        "📈 گزارش درآمد":       show_revenue,
+        "⚙️ راهنما":            show_help,
+    }
+    handler = menu_handlers.get(text)
+    if handler:
+        await handler(update, context)
 
 
-# ─── /reply_<ticket_id> ───────────────────────────────────────────────────────
+# ─── /reply_<id> ─────────────────────────────────────────────────────────────
 
 @admin_only
 async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -320,252 +495,301 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not match:
         await update.message.reply_text("فرمت: /reply_ID متن پاسخ")
         return
-
-    ticket_id = int(match.group(1))
-    reply_text = match.group(2) or ""
-
-    if not reply_text.strip():
-        await update.message.reply_text("لطفاً متن پاسخ را وارد کنید:\n/reply_ID متن")
+    tid  = int(match.group(1))
+    body = (match.group(2) or "").strip()
+    if not body:
+        await update.message.reply_text("لطفاً متن پاسخ را بنویسید.")
         return
-
-    user_id = close_ticket(ticket_id, reply_text)
-    if not user_id:
+    uid = close_ticket(tid, body)
+    if not uid:
         await update.message.reply_text("❌ تیکت پیدا نشد.")
         return
-
-    customer_bot: Bot = context.bot_data.get("customer_bot_instance")
+    customer_bot = context.bot_data.get("customer_bot_instance")
     if customer_bot:
         try:
             await customer_bot.send_message(
-                chat_id=user_id,
-                text=(
-                    f"💬 *پاسخ پشتیبانی — تیکت #{ticket_id}*\n\n"
-                    f"{reply_text}"
-                ),
+                uid,
+                f"💬 *پاسخ پشتیبانی — تیکت #{tid}*\n\n{body}",
                 parse_mode="Markdown"
             )
         except Exception as e:
-            logger.error("Reply delivery failed: %s", e)
+            logger.error("Reply delivery: %s", e)
+    await update.message.reply_text(f"✅ پاسخ تیکت #{tid} ارسال شد.", reply_markup=admin_main_kb())
 
-    await update.message.reply_text(
-        f"✅ پاسخ تیکت #{ticket_id} ارسال شد.",
-        reply_markup=admin_main_kb()
-    )
-
-
-# ─── /cancel ─────────────────────────────────────────────────────────────────
-
-@admin_only
-async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data[STATE] = S_IDLE
-    await update.message.reply_text("❌ لغو شد.", reply_markup=admin_main_kb())
-
-
-# ─── /block and /unblock ─────────────────────────────────────────────────────
 
 @admin_only
 async def cmd_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if not args:
-        await update.message.reply_text("فرمت: /block USER_ID")
-        return
-    uid = int(args[0])
+    if not context.args:
+        await update.message.reply_text("فرمت: /block USER_ID"); return
+    uid = int(context.args[0])
     block_user(uid)
-    await update.message.reply_text(f"🚫 کاربر {uid} مسدود شد.")
+    await update.message.reply_text(f"🚫 {uid} مسدود شد.")
 
 
 @admin_only
 async def cmd_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if not args:
-        await update.message.reply_text("فرمت: /unblock USER_ID")
-        return
-    uid = int(args[0])
+    if not context.args:
+        await update.message.reply_text("فرمت: /unblock USER_ID"); return
+    uid = int(context.args[0])
     unblock_user(uid)
-    await update.message.reply_text(f"✅ کاربر {uid} رفع مسدودیت شد.")
+    await update.message.reply_text(f"✅ {uid} رفع مسدودیت شد.")
 
 
-# ─── Stats / Info screens ─────────────────────────────────────────────────────
+@admin_only
+async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[ST] = S_WAIT_WALLET_ADJ
+    await update.message.reply_text(
+        "💼 تنظیم کیف پول\n\nفرمت: `USER_ID AMOUNT`\n"
+        "برای کاهش عدد منفی:\n`123456 -50000`",
+        parse_mode="Markdown", reply_markup=admin_cancel_kb()
+    )
+
+
+@admin_only
+async def cmd_deltpl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("فرمت: /deltpl TEMPLATE_ID"); return
+    delete_template(int(context.args[0]))
+    await update.message.reply_text("✅ قالب حذف شد.")
+
+
+# ─── Menu handlers ────────────────────────────────────────────────────────────
 
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = get_stats()
-    text = (
-        "📊 *آمار کلی*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👥 کاربران: {s['total_users']:,}\n\n"
-        f"⏳ سفارش در انتظار: {s['pending_orders']}\n"
-        f"✅ سفارش تایید‌شده: {s['approved_orders']:,}\n"
-        f"❌ سفارش ردشده: {s['rejected_orders']:,}\n\n"
-        f"💰 درآمد کل: {fmt_price(s['total_revenue'])}\n"
-        f"📦 گیگ فروخته‌شده: {s['total_gb_sold']:,} گیگ\n\n"
-        f"💬 تیکت‌های باز: {s['open_tickets']}"
+    avg_r = round(float(s.get("avg_rating") or 0), 1)
+    await update.message.reply_text(
+        "📊 *آمار کلی*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📅 امروز: {s['today_orders']} سفارش | {fmt(s['today_revenue'])}\n\n"
+        f"👥 کل کاربران: {s['total_users']:,}\n"
+        f"🚫 مسدود: {s['blocked_users']}\n\n"
+        f"⏳ انتظار: {s['pending_orders']}\n"
+        f"✅ تایید: {s['approved_orders']:,}\n"
+        f"❌ رد: {s['rejected_orders']}\n\n"
+        f"💰 درآمد کل: {fmt(s['total_revenue'])}\n"
+        f"💼 درآمد کیف پول: {fmt(s['wallet_revenue'])}\n"
+        f"📦 گیگ فروش: {s['total_gb_sold']:,} GB\n"
+        f"💼 موجودی کیف پول‌ها: {fmt(s['total_wallet'])}\n"
+        f"💬 تیکت باز: {s['open_tickets']}\n"
+        f"⭐ میانگین امتیاز: {avg_r}/5",
+        parse_mode="Markdown", reply_markup=admin_main_kb()
     )
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=admin_main_kb())
 
 
 async def show_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     orders = get_pending_orders()
     if not orders:
-        await update.message.reply_text("✅ هیچ سفارش در انتظاری وجود ندارد.")
+        await update.message.reply_text("✅ سفارش در انتظاری نیست.", reply_markup=admin_main_kb())
         return
-
-    text = f"📋 *سفارشات در انتظار* ({len(orders)} عدد)\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    text = f"📋 *سفارشات در انتظار* ({len(orders)})\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
     for o in orders:
-        uname = f"@{o['username']}" if o.get("username") else "—"
+        wallet_badge = "💼" if o.get("paid_by_wallet") else "💳"
+        trial_badge  = "🎯" if o.get("is_trial") else ""
         text += (
-            f"🆔 #{o['id']} | {o['full_name']} ({uname})\n"
-            f"   📦 {o['gb_amount']} گیگ | 💰 {fmt_price(o['total_price'])}\n"
-            f"   ⏰ {o['created_at'][:16]}\n\n"
+            f"{wallet_badge}{trial_badge} *#{o['id']}* — {o['full_name']}\n"
+            f"   📦 {fmt_gb(o['gb_amount'])} | 💰 {fmt(o['total_price'])}\n"
+            f"   ⏰ {fmt_dt(o['created_at'])}\n\n"
         )
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=admin_main_kb())
+
+
+async def show_pending_wallets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txs = get_pending_wallet_charges()
+    if not txs:
+        await update.message.reply_text("✅ شارژی در انتظار نیست.", reply_markup=admin_main_kb())
+        return
+    for tx in txs:
+        uname = f"@{tx['username']}" if tx.get("username") else "—"
+        text = (
+            f"💳 *شارژ #{tx['id']}*\n\n"
+            f"👤 {tx['full_name']} | {uname}\n"
+            f"💰 {fmt(tx['amount'])}\n"
+            f"⏰ {fmt_dt(tx['created_at'])}"
+        )
+        if tx.get("receipt_file_id"):
+            try:
+                f = await context.bot.get_file(tx["receipt_file_id"])
+                buf = BytesIO(bytes(await f.download_as_bytearray()))
+                buf.name = "r.jpg"
+                await update.message.reply_photo(
+                    photo=buf, caption=text, parse_mode="Markdown",
+                    reply_markup=admin_wallet_kb(tx["id"])
+                )
+                continue
+            except Exception:
+                pass
+        await update.message.reply_text(text, parse_mode="Markdown",
+                                        reply_markup=admin_wallet_kb(tx["id"]))
+
+
+async def show_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    tickets = get_open_tickets()
+    if not tickets:
+        await update.message.reply_text("✅ تیکت بازی نیست.", reply_markup=admin_main_kb())
+        return
+    text = f"💬 *تیکت‌های باز* ({len(tickets)})\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    for t in tickets:
+        uname = f"@{t['username']}" if t.get("username") else "—"
+        snippet = (t["message"] or "")[:70].replace("\n", " ")
+        text += (
+            f"🎫 *#{t['id']}* — {t['full_name']} ({uname})\n"
+            f"   📝 {snippet}\n"
+            f"   `/reply_{t['id']} [پاسخ]`\n\n"
+        )
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=admin_main_kb())
+
+
+async def show_templates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    templates = get_templates()
+    if not templates:
+        await update.message.reply_text(
+            "📋 هنوز قالبی ندارید.\n"
+            "برای افزودن قالب: /addtemplate",
+            reply_markup=admin_main_kb()
+        )
+        return
+    text = f"📋 *قالب‌های کانفیگ* ({len(templates)})\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    for t in templates:
+        sub_badge = "🔗" if t.get("sub_link") else ""
+        text += f"• *{t['name']}* {sub_badge} — استفاده: {t['use_count']} | آیدی: {t['id']}\n"
+    text += "\nحذف قالب: `/deltpl ID`"
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=admin_main_kb())
+
+
+async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[ST] = S_WAIT_SEARCH
+    await update.message.reply_text(
+        "🔍 عبارت جستجو را وارد کنید:\n(نام، یوزرنیم یا شماره سفارش)",
+        reply_markup=admin_cancel_kb()
+    )
+
+
+async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[ST] = S_WAIT_BROADCAST
+    await update.message.reply_text(
+        "📢 متن پیام همگانی را ارسال کنید:\n(Markdown پشتیبانی می‌شود)",
+        reply_markup=admin_cancel_kb()
+    )
 
 
 async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = get_all_users()
-    text = f"👥 *کاربران* ({len(users)} نفر)\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    for u in users[:20]:
+    text = f"👥 *کاربران* ({len(users)})\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    for u in users[:15]:
         uname = f"@{u['username']}" if u.get("username") else "—"
+        vip, _ = get_vip(u.get("total_spent", 0))
         text += (
-            f"• {u['full_name']} — {uname}\n"
-            f"  🆔 `{u['user_id']}` | 🛍️ {u['total_orders']} سفارش | 💰 {fmt_price(u['total_spent'])}\n\n"
+            f"• {u['full_name']} ({uname})\n"
+            f"  `{u['user_id']}` | {vip} | {fmt(u['total_spent'])}\n\n"
         )
-    if len(users) > 20:
-        text += f"... و {len(users)-20} نفر دیگر\n"
+    if len(users) > 15:
+        text += f"... و {len(users)-15} نفر دیگر"
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=admin_main_kb())
+
+
+async def start_discount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[ST] = S_WAIT_DISCOUNT
+    await update.message.reply_text(
+        "🎫 *کد تخفیف جدید*\n\nفرمت: `CODE PERCENT [MAX_USES]`\n"
+        "مثال: `VIP20 20 10`",
+        parse_mode="Markdown", reply_markup=admin_cancel_kb()
+    )
+
+
+async def export_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    csv = export_orders_csv()
+    buf = BytesIO(csv.encode("utf-8"))
+    buf.name = "orders.csv"
+    await update.message.reply_document(document=buf, filename="orders.csv",
+                                        caption="📤 خروجی سفارشات")
 
 
 async def show_revenue(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = get_stats()
-    avg_order = (
-        s["total_revenue"] // s["approved_orders"]
-        if s["approved_orders"] else 0
+    avg = s["total_revenue"] // max(s["approved_orders"], 1)
+    await update.message.reply_text(
+        "📈 *گزارش درآمد*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💵 کل: {fmt(s['total_revenue'])}\n"
+        f"💼 از کیف پول: {fmt(s['wallet_revenue'])}\n"
+        f"🛍️ سفارشات: {s['approved_orders']:,}\n"
+        f"📦 گیگ: {s['total_gb_sold']:,} GB\n"
+        f"📊 میانگین: {fmt(avg)}\n"
+        f"📅 امروز: {fmt(s['today_revenue'])}",
+        parse_mode="Markdown", reply_markup=admin_main_kb()
     )
-    text = (
-        "💰 *گزارش درآمد*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💵 درآمد کل: {fmt_price(s['total_revenue'])}\n"
-        f"📦 گیگ فروش: {s['total_gb_sold']:,} گیگ\n"
-        f"🛍️ تعداد سفارش: {s['approved_orders']:,}\n"
-        f"📊 میانگین سفارش: {fmt_price(avg_order)}\n"
-        f"💡 قیمت هر گیگ: {fmt_price(PRICE_PER_GB)}"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=admin_main_kb())
-
-
-async def show_open_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from database import _get_conn
-    conn = _get_conn()
-    rows = conn.execute(
-        "SELECT * FROM support_tickets WHERE status='open' ORDER BY created_at DESC LIMIT 20"
-    ).fetchall()
-    conn.close()
-    if not rows:
-        await update.message.reply_text("✅ هیچ تیکت بازی وجود ندارد.")
-        return
-    text = f"💬 *تیکت‌های باز* ({len(rows)} عدد)\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    for t in rows:
-        uname = f"@{t['username']}" if t["username"] else "—"
-        snippet = t["message"][:80].replace("\n", " ")
-        text += (
-            f"🎫 #{t['id']} — {t['full_name']} ({uname})\n"
-            f"   📝 {snippet}...\n"
-            f"   /reply_{t['id']} [پاسخ]\n\n"
-        )
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=admin_main_kb())
 
 
 async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "⚙️ *راهنمای ادمین*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📋 *مدیریت سفارشات:*\n"
-        "  سفارشات جدید با دکمه تایید/رد ارسال می‌شوند.\n"
-        "  بعد از تایید، کانفیگ VLESS را ارسال کنید.\n"
-        "  سپس لینک Sub را ارسال کنید (یا - برای خالی).\n\n"
+    await update.message.reply_text(
+        "⚙️ *راهنمای ادمین*\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📋 *سفارشات:*\n"
+        "  تایید: دکمه ✅ روی سفارش\n"
+        "  رد: دکمه ❌ روی سفارش\n\n"
         "💬 *پشتیبانی:*\n"
         "  `/reply_ID متن پاسخ`\n\n"
+        "💼 *کیف پول:*\n"
+        "  `/wallet` → تنظیم دستی\n\n"
         "🚫 *مسدودسازی:*\n"
-        "  `/block USER_ID`\n"
-        "  `/unblock USER_ID`\n\n"
-        "🎫 *کد تخفیف:*\n"
-        "  از منو «ایجاد کد تخفیف» استفاده کنید.\n"
-        "  فرمت: `CODE PERCENT MAX_USES`\n\n"
-        "📢 *پیام همگانی:*\n"
-        "  از منو «پیام همگانی» برای همه کاربران."
+        "  `/block USER_ID` | `/unblock USER_ID`\n\n"
+        "📋 *قالب کانفیگ:*\n"
+        "  `/addtemplate` | `/deltpl ID`\n\n"
+        "🤖 *پنل Marzban:*\n"
+        "  `PANEL_ENABLED=true` در .env\n\n"
+        "📢 *پیام همگانی:* از منو",
+        parse_mode="Markdown", reply_markup=admin_main_kb()
     )
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=admin_main_kb())
 
 
-# ─── Deliver config to customer ───────────────────────────────────────────────
-
-async def _deliver_config_to_customer(customer_bot: Bot, order: dict, config: str, sub_link: str):
-    uid = order["user_id"]
-    gb  = order["gb_amount"]
-    msg = (
-        f"🎉 *سفارش شما تایید شد!*\n\n"
-        f"🆔 شماره سفارش: *#{order['id']}*\n"
-        f"📦 حجم: {gb} گیگابایت\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "📋 *کانفیگ VLESS شما:*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"`{config}`"
-    )
-    try:
-        await customer_bot.send_message(uid, msg, parse_mode="Markdown")
-    except Exception as e:
-        logger.error("Config delivery failed: %s", e)
+async def _show_user_profile(message, user_id: int):
+    u = get_user(user_id)
+    if not u:
+        await message.reply_text("❌ کاربر پیدا نشد.")
         return
-
-    if sub_link:
-        try:
-            await customer_bot.send_message(
-                uid,
-                f"🔗 *لینک Subscription:*\n`{sub_link}`",
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.error("Sub link delivery failed: %s", e)
-
-    # Send platform guides
-    guide_text = (
-        "📚 *راهنمای نصب:*\n\n"
-        "🍎 *آیفون:*\n"
-        "• NPV Tunnel → دریافت از App Store\n"
-        "• V2Box → دریافت از App Store\n\n"
-        "🤖 *اندروید:*\n"
-        "• V2RayNG → دریافت از Google Play\n"
-        "• Hiddify → دریافت از Google Play\n\n"
-        "🪟 *ویندوز:*\n"
-        "• V2RayN → دانلود از GitHub\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "برای راهنمای تصویری کامل، در ربات مشتری\n"
-        "روی 📚 *راهنمای نصب* بزنید.\n\n"
-        "موفق باشید! 🚀"
+    uname = f"@{u['username']}" if u.get("username") else "—"
+    vip, disc = get_vip(u.get("total_spent", 0))
+    await message.reply_text(
+        f"👤 *پروفایل کاربر*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 `{u['user_id']}`\n"
+        f"👤 {u['full_name']}\n"
+        f"🔗 {uname}\n"
+        f"📅 {fmt_dt(u.get('join_date',''))}\n"
+        f"💎 {vip}\n"
+        f"🛍️ سفارشات: {u['total_orders']}\n"
+        f"💰 کل خرید: {fmt(u['total_spent'])}\n"
+        f"💼 کیف پول: {fmt(u['wallet_balance'])}\n"
+        f"🎯 آزمایش: {'استفاده شده' if u['free_trial_used'] else 'نشده'}\n"
+        f"🚫 مسدود: {'بله' if u['is_blocked'] else 'خیر'}",
+        parse_mode="Markdown"
     )
-    try:
-        await customer_bot.send_message(uid, guide_text, parse_mode="Markdown")
-    except Exception as e:
-        logger.error("Guide delivery failed: %s", e)
 
 
-# ─── Wire up ──────────────────────────────────────────────────────────────────
+# ─── /addtemplate ─────────────────────────────────────────────────────────────
+
+@admin_only
+async def cmd_addtemplate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data[ST] = S_WAIT_TPL_NAME
+    await update.message.reply_text(
+        "📋 نام قالب را وارد کنید:\n(مثال: سرور ایران ۱)", reply_markup=admin_cancel_kb()
+    )
+
+
+# ─── Setup ────────────────────────────────────────────────────────────────────
 
 def setup_admin_bot(app: Application, customer_bot_instance: Bot = None) -> None:
     if customer_bot_instance:
         app.bot_data["customer_bot_instance"] = customer_bot_instance
 
-    app.add_handler(CommandHandler("start",   cmd_start))
-    app.add_handler(CommandHandler("cancel",  cmd_cancel))
-    app.add_handler(CommandHandler("block",   cmd_block))
-    app.add_handler(CommandHandler("unblock", cmd_unblock))
-    app.add_handler(MessageHandler(
-        filters.Regex(r"^/reply_\d+"),
-        cmd_reply
-    ))
+    app.add_handler(CommandHandler("start",       cmd_start))
+    app.add_handler(CommandHandler("cancel",      cmd_cancel))
+    app.add_handler(CommandHandler("block",       cmd_block))
+    app.add_handler(CommandHandler("unblock",     cmd_unblock))
+    app.add_handler(CommandHandler("wallet",      cmd_wallet))
+    app.add_handler(CommandHandler("addtemplate", cmd_addtemplate))
+    app.add_handler(CommandHandler("deltpl",      cmd_deltpl))
+    app.add_handler(MessageHandler(filters.Regex(r"^/reply_\d+"), cmd_reply))
     app.add_handler(CallbackQueryHandler(handle_callbacks))
     app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.Chat(ADMIN_CHAT_ID),
+        filters.TEXT & ~filters.COMMAND & filters.Chat(chat_id=ADMIN_IDS),
         handle_text
     ))
-
-    logger.info("Admin bot handlers registered.")
+    logger.info("Admin bot ready.")
