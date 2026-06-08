@@ -25,6 +25,12 @@ def _csv_ints(raw: str | None) -> set[int]:
     return out
 
 
+def _csv_str(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
 @dataclass
 class Config:
     token: str
@@ -33,17 +39,22 @@ class Config:
     max_filesize_mb: int = 49
     search_results: int = 6
     download_dir: Path = Path("downloads")
+    db_path: Path = Path("bot.db")
     base_url: str | None = None
     base_file_url: str | None = None
     cookies_file: str | None = None
     proxy: str | None = None
+    # Sponsor / force-join channels (e.g. ["@mychannel"]). Empty = disabled.
+    force_join: list[str] = field(default_factory=list)
+    # Max downloads per user per 24h for non-admins. 0 = unlimited.
+    daily_quota: int = 0
 
     @property
     def max_filesize_bytes(self) -> int:
         return self.max_filesize_mb * 1024 * 1024
 
     def is_allowed(self, user_id: int) -> bool:
-        """Return True if the user may use the bot."""
+        """Return True if the user may use the bot (allow-list gate)."""
         if not self.allowed_users:
             return True
         return user_id in self.allowed_users or user_id in self.admins
@@ -63,6 +74,8 @@ def load_config() -> Config:
     download_dir = Path(os.getenv("DOWNLOAD_DIR", "downloads")).expanduser()
     download_dir.mkdir(parents=True, exist_ok=True)
 
+    db_path = Path(os.getenv("DB_PATH", "bot.db")).expanduser()
+
     cookies = os.getenv("COOKIES_FILE", "").strip() or None
     if cookies and not Path(cookies).exists():
         cookies = None  # silently ignore a missing cookies file
@@ -74,8 +87,11 @@ def load_config() -> Config:
         max_filesize_mb=int(os.getenv("MAX_FILESIZE_MB", "49") or "49"),
         search_results=int(os.getenv("SEARCH_RESULTS", "6") or "6"),
         download_dir=download_dir,
+        db_path=db_path,
         base_url=os.getenv("BASE_URL", "").strip() or None,
         base_file_url=os.getenv("BASE_FILE_URL", "").strip() or None,
         cookies_file=cookies,
         proxy=os.getenv("PROXY", "").strip() or None,
+        force_join=_csv_str(os.getenv("FORCE_JOIN_CHANNELS")),
+        daily_quota=int(os.getenv("DAILY_QUOTA", "0") or "0"),
     )

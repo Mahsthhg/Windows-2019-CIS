@@ -83,6 +83,22 @@ def truncate(text: str, limit: int = 60) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def make_bar(percent: float, slots: int = 12) -> str:
+    """Render a textual progress bar, e.g. ▰▰▰▰▱▱▱▱▱▱▱▱."""
+    percent = max(0.0, min(100.0, percent))
+    filled = int(round(percent / 100 * slots))
+    return "▰" * filled + "▱" * (slots - filled)
+
+
+def next_in_cycle(value: str, choices: list[str]) -> str:
+    """Return the next item after ``value`` in ``choices`` (wraps around)."""
+    try:
+        i = choices.index(value)
+    except ValueError:
+        return choices[0]
+    return choices[(i + 1) % len(choices)]
+
+
 _MD_SPECIALS = r"_*[]()~`>#+-=|{}.!"
 
 

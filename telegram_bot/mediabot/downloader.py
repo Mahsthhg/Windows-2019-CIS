@@ -8,7 +8,7 @@ import shutil
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yt_dlp
 
@@ -16,17 +16,19 @@ from .config import Config
 
 log = logging.getLogger(__name__)
 
+# A progress callback receives a dict: {percent, downloaded, total, speed, eta}.
+ProgressCB = Callable[[dict[str, Any]], None]
+
 
 @dataclass
 class MediaInfo:
-    """Metadata about a single piece of media (no file downloaded yet)."""
-
     url: str
     title: str
     uploader: str | None = None
     duration: int | None = None
     thumbnail: str | None = None
     is_playlist: bool = False
+    playlist_count: int = 0
     webpage_url: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -94,22 +96,55 @@ class Downloader:
     def _outtmpl(self, job_id: str) -> str:
         return str(self.config.download_dir / f"{job_id}.%(ext)s")
 
+    @staticmethod
+    def _hook(progress_cb: ProgressCB | None):
+        if progress_cb is None:
+            return None
+
+        def hook(d: dict[str, Any]) -> None:
+            if d.get("status") != "downloading":
+                return
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            downloaded = d.get("downloaded_bytes") or 0
+            percent = (downloaded / total * 100) if total else 0.0
+            try:
+                progress_cb(
+                    {
+                        "percent": percent,
+                        "downloaded": downloaded,
+                        "total": total,
+                        "speed": d.get("speed") or 0,
+                        "eta": d.get("eta") or 0,
+                    }
+                )
+            except Exception:  # never let a UI hiccup kill the download
+                pass
+
+        return hook
+
     # ------------------------------------------------------------------ #
     #  Public async API
     # ------------------------------------------------------------------ #
     async def probe(self, url: str) -> MediaInfo:
-        """Fetch metadata for a URL without downloading."""
         return await asyncio.to_thread(self._probe_sync, url)
 
     async def search(self, query: str, limit: int) -> list[SearchResult]:
-        """Search YouTube for the query and return up to ``limit`` results."""
         return await asyncio.to_thread(self._search_sync, query, limit)
 
-    async def download_audio(self, url: str) -> DownloadResult:
-        return await asyncio.to_thread(self._download_audio_sync, url)
+    async def download_audio(
+        self, url: str, bitrate: str = "192", progress_cb: ProgressCB | None = None
+    ) -> DownloadResult:
+        return await asyncio.to_thread(self._download_audio_sync, url, bitrate, progress_cb)
 
-    async def download_video(self, url: str, max_height: int | None = None) -> DownloadResult:
-        return await asyncio.to_thread(self._download_video_sync, url, max_height)
+    async def download_video(
+        self,
+        url: str,
+        max_height: int | None = None,
+        progress_cb: ProgressCB | None = None,
+    ) -> DownloadResult:
+        return await asyncio.to_thread(
+            self._download_video_sync, url, max_height, progress_cb
+        )
 
     async def download_spotify(self, url: str) -> DownloadResult:
         return await asyncio.to_thread(self._download_spotify_sync, url)
@@ -139,6 +174,8 @@ class Downloader:
                 title=info.get("title") or first.get("title") or "Playlist",
                 uploader=info.get("uploader"),
                 is_playlist=True,
+                playlist_count=len(entries),
+                thumbnail=first.get("thumbnail"),
                 webpage_url=info.get("webpage_url") or url,
                 raw=info,
             )
@@ -177,7 +214,9 @@ class Downloader:
             )
         return [r for r in results if r.url]
 
-    def _download_audio_sync(self, url: str) -> DownloadResult:
+    def _download_audio_sync(
+        self, url: str, bitrate: str, progress_cb: ProgressCB | None
+    ) -> DownloadResult:
         job_id = uuid.uuid4().hex
         opts = self._base_opts()
         opts.update(
@@ -188,7 +227,7 @@ class Downloader:
                     {
                         "key": "FFmpegExtractAudio",
                         "preferredcodec": "mp3",
-                        "preferredquality": "192",
+                        "preferredquality": bitrate,
                     },
                     {"key": "FFmpegMetadata"},
                     {"key": "EmbedThumbnail"},
@@ -196,6 +235,9 @@ class Downloader:
                 "writethumbnail": True,
             }
         )
+        hook = self._hook(progress_cb)
+        if hook:
+            opts["progress_hooks"] = [hook]
         info = self._run_download(opts, url)
         path = self._find_output(job_id, prefer=(".mp3", ".m4a", ".opus", ".webm"))
         return DownloadResult(
@@ -207,7 +249,9 @@ class Downloader:
             thumbnail=info.get("thumbnail"),
         )
 
-    def _download_video_sync(self, url: str, max_height: int | None) -> DownloadResult:
+    def _download_video_sync(
+        self, url: str, max_height: int | None, progress_cb: ProgressCB | None
+    ) -> DownloadResult:
         job_id = uuid.uuid4().hex
         opts = self._base_opts()
 
@@ -225,11 +269,12 @@ class Downloader:
                 "format": fmt,
                 "outtmpl": self._outtmpl(job_id),
                 "merge_output_format": "mp4",
-                "postprocessors": [
-                    {"key": "FFmpegMetadata"},
-                ],
+                "postprocessors": [{"key": "FFmpegMetadata"}],
             }
         )
+        hook = self._hook(progress_cb)
+        if hook:
+            opts["progress_hooks"] = [hook]
         info = self._run_download(opts, url)
         path = self._find_output(job_id, prefer=(".mp4", ".mkv", ".webm"))
         return DownloadResult(
@@ -244,7 +289,6 @@ class Downloader:
         )
 
     def _download_spotify_sync(self, url: str) -> DownloadResult:
-        """Use spotdl (which sources audio from YouTube) for Spotify links."""
         spotdl_bin = shutil.which("spotdl")
         if not spotdl_bin:
             raise DownloadError(
@@ -267,9 +311,7 @@ class Downloader:
             "mp3",
         ]
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=600
-            )
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         except subprocess.TimeoutExpired as exc:
             raise DownloadError("Spotify download timed out.") from exc
 
@@ -280,8 +322,7 @@ class Downloader:
             raise DownloadError(f"Spotify download failed: {tail}")
 
         path = files[0]
-        title = path.stem
-        return DownloadResult(path=path, title=title, kind="audio")
+        return DownloadResult(path=path, title=path.stem, kind="audio")
 
     # ------------------------------------------------------------------ #
     #  Internal helpers
@@ -302,9 +343,7 @@ class Downloader:
         return info
 
     def _find_output(self, job_id: str, prefer: tuple[str, ...]) -> Path:
-        """Locate the produced file for a job, preferring certain extensions."""
         candidates = sorted(self.config.download_dir.glob(f"{job_id}.*"))
-        # Drop intermediate thumbnail/part files.
         media = [
             p
             for p in candidates
@@ -323,19 +362,16 @@ class Downloader:
 
 def _clean_error(exc: Exception) -> str:
     """Turn a noisy yt-dlp error into a short, user-friendly message."""
-    msg = str(exc)
-    msg = msg.replace("ERROR:", "").strip()
-    # Common, friendlier rewrites.
+    msg = str(exc).replace("ERROR:", "").strip()
     lowered = msg.lower()
     if "private" in lowered:
-        return "This content is private and cannot be downloaded."
+        return "این محتوا خصوصی است و قابل دانلود نیست."
     if "age" in lowered and "restrict" in lowered:
-        return "This content is age-restricted. A cookies file may be required."
+        return "این محتوا محدودیت سنی دارد و به فایل کوکی نیاز است."
     if "unavailable" in lowered:
-        return "This content is unavailable or has been removed."
+        return "این محتوا در دسترس نیست یا حذف شده است."
     if "unsupported url" in lowered:
-        return "This site/link is not supported."
+        return "این سایت/لینک پشتیبانی نمی‌شود."
     if "login" in lowered or "sign in" in lowered:
-        return "This content requires login. A cookies file may be required."
-    # Keep it short.
-    return msg.splitlines()[0][:300] if msg else "Download failed."
+        return "این محتوا نیازمند ورود به حساب است (فایل کوکی لازم است)."
+    return msg.splitlines()[0][:300] if msg else "دانلود ناموفق بود."

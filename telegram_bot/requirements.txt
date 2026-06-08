@@ -1,9 +1,12 @@
 # ===== Core =====
-python-telegram-bot[job-queue]==21.9
+python-telegram-bot[job-queue,rate-limiter]==21.9
 
 # ===== Download engines =====
 yt-dlp>=2024.12.13          # YouTube, Instagram, PornHub, TikTok, SoundCloud, +1000 sites
 spotdl>=4.2.10              # Spotify (downloads audio via YouTube source)
+
+# ===== Persistence =====
+aiosqlite>=0.20.0          # async SQLite (users, stats, settings, file cache)
 
 # ===== Helpers =====
 python-dotenv>=1.0.1        # load configuration from .env
