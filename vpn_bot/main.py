@@ -2,7 +2,7 @@
 import asyncio
 import logging
 import sys
-from telegram.ext import Application, PicklePersistence
+from telegram.ext import Application, PicklePersistence, PersistenceInput
 from config import CUSTOMER_BOT_TOKEN, ADMIN_BOT_TOKEN, ADMIN_CHAT_ID, ADMIN_IDS
 from database import init_db
 from settings_manager import init_settings
@@ -44,22 +44,16 @@ async def run() -> None:
     logger.info("✅ دیتابیس و تنظیمات آماده شد.")
 
     # Holder lets post_init reference admin_app which is built after customer_app
-    class _BotHolder:
-        admin_bot = None
-
-    holder = _BotHolder()
-
-    async def _reinject_admin(app: Application) -> None:
-        """Re-inject admin_bot_instance after PicklePersistence overwrites bot_data."""
-        if holder.admin_bot:
-            app.bot_data["admin_bot_instance"] = holder.admin_bot
-
-    customer_persistence = PicklePersistence(filepath="customer_state.pkl")
+    # bot_data=False: do not persist bot_data (Bot objects can't be pickled)
+    # ConversationHandler state is stored separately, not affected by this
+    customer_persistence = PicklePersistence(
+        filepath="customer_state.pkl",
+        store_data=PersistenceInput(bot_data=False),
+    )
     customer_app = (
         Application.builder()
         .token(CUSTOMER_BOT_TOKEN)
         .persistence(customer_persistence)
-        .post_init(_reinject_admin)
         .connect_timeout(30).read_timeout(30).write_timeout(30).pool_timeout(30)
         .build()
     )
@@ -69,8 +63,6 @@ async def run() -> None:
         .connect_timeout(30).read_timeout(30).write_timeout(30).pool_timeout(30)
         .build()
     )
-
-    holder.admin_bot = admin_app.bot
 
     setup_customer_bot(customer_app, admin_bot_instance=admin_app.bot)
     setup_admin_bot(admin_app, customer_bot_instance=customer_app.bot)
