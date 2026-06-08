@@ -197,23 +197,25 @@ async def handle_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def handle_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
     data = query.data
     user = query.from_user
 
-    # Force join check
+    # Force join check — must answer before any other call
     if data == "check_join":
         missing = await _unjoined(context.bot, user.id)
         if missing:
             await query.answer("هنوز عضو نشدید!", show_alert=True)
             await query.edit_message_reply_markup(reply_markup=join_required_kb(missing))
         else:
+            await query.answer("✅ عضویت تایید شد!")
             await query.edit_message_text("✅ عضویت تایید شد!")
             db_user = get_user(user.id)
             show_trial = FREE_TRIAL_ENABLED and db_user and not db_user.get("free_trial_used")
             await query.message.reply_text("از منوی زیر انتخاب کنید:",
                                            reply_markup=main_menu_kb(show_trial))
         return MAIN_MENU
+
+    await query.answer()
 
     # Guides
     if data in GUIDES:
