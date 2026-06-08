@@ -37,9 +37,25 @@ async def run() -> None:
     init_db()
     logger.info("دیتابیس آماده شد.")
 
-    # Build applications
-    customer_app = Application.builder().token(CUSTOMER_BOT_TOKEN).build()
-    admin_app    = Application.builder().token(ADMIN_BOT_TOKEN).build()
+    # Build applications — افزایش timeout برای سرورهایی که اتصال کندتری دارند
+    customer_app = (
+        Application.builder()
+        .token(CUSTOMER_BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
+        .build()
+    )
+    admin_app = (
+        Application.builder()
+        .token(ADMIN_BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
+        .build()
+    )
 
     # Cross-inject bot instances so each bot can message the other's users
     setup_customer_bot(customer_app, admin_bot_instance=admin_app.bot)

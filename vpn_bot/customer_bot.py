@@ -346,7 +346,7 @@ async def handle_receipt_upload(update: Update, context: ContextTypes.DEFAULT_TY
     # Notify admin via shared reference
     admin_bot = context.bot_data.get("admin_bot_instance")
     if admin_bot:
-        await _notify_admin(admin_bot, order_id, user, gb, total_price, receipt_file_id)
+        await _notify_admin(context.bot, admin_bot, order_id, user, gb, total_price, receipt_file_id)
 
     await update.message.reply_text(
         "✅ *سفارش شما ثبت شد!*\n\n"
@@ -363,30 +363,52 @@ async def handle_receipt_upload(update: Update, context: ContextTypes.DEFAULT_TY
     return MAIN_MENU
 
 
-async def _notify_admin(admin_bot, order_id, user, gb, total_price, receipt_file_id):
+async def _notify_admin(customer_bot, admin_bot, order_id, user, gb, total_price, receipt_file_id):
+    """
+    file_id های Telegram به ربات دریافت‌کننده وابسته‌اند.
+    رسید را از طریق ربات مشتری دانلود، سپس با ربات ادمین آپلود می‌کنیم.
+    """
     from config import ADMIN_CHAT_ID
     from keyboards import admin_new_order_kb
+    from io import BytesIO
+
     uname = f"@{user.username}" if user.username else "—"
-    header = (
+    caption = (
         "🛍️ *سفارش جدید!*\n\n"
         f"🆔 سفارش: #{order_id}\n"
         f"👤 نام: {user.full_name}\n"
         f"🔗 یوزرنیم: {uname}\n"
         f"📟 آیدی: `{user.id}`\n"
         f"📦 حجم: {gb} گیگابایت\n"
-        f"💰 مبلغ: {fmt_price(total_price)}\n\n"
-        "📸 رسید پرداخت:"
+        f"💰 مبلغ: {fmt_price(total_price)}"
     )
     try:
-        await admin_bot.send_message(ADMIN_CHAT_ID, header, parse_mode="Markdown")
+        # دانلود فایل از طریق ربات مشتری (که file_id برایش معتبر است)
+        tg_file = await customer_bot.get_file(receipt_file_id)
+        file_bytes = await tg_file.download_as_bytearray()
+        photo_buf = BytesIO(bytes(file_bytes))
+        photo_buf.name = "receipt.jpg"
+
+        # آپلود از طریق ربات ادمین (تا دکمه‌های inline کار کنند)
         await admin_bot.send_photo(
-            ADMIN_CHAT_ID,
-            photo=receipt_file_id,
-            caption=f"رسید سفارش #{order_id}",
+            chat_id=ADMIN_CHAT_ID,
+            photo=photo_buf,
+            caption=caption,
+            parse_mode="Markdown",
             reply_markup=admin_new_order_kb(order_id)
         )
     except Exception as e:
         logger.error("Failed to notify admin: %s", e)
+        # Fallback: متن بدون عکس
+        try:
+            await admin_bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=caption + "\n\n⚠️ ارسال رسید ناموفق بود.",
+                parse_mode="Markdown",
+                reply_markup=admin_new_order_kb(order_id)
+            )
+        except Exception as e2:
+            logger.error("Admin fallback also failed: %s", e2)
 
 
 # ─── Support ──────────────────────────────────────────────────────────────────
