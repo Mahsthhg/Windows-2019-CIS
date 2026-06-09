@@ -215,19 +215,29 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         welcome += "\n🎁 از طریق دعوت دوست وارد شدید!"
 
     flash = get_active_flash_sale()
-    flash_line = f"\n🔥 <b>فلش سیل فعال: {flash['discount_pct']}٪ تخفیف!</b>" if flash else ""
+    flash_banner = f"\n🔥🔥 <b>فلش سیل: {flash['discount_pct']}٪ تخفیف!</b> 🔥🔥" if flash else ""
+
+    servers = [s for s in get_servers() if s.get("is_active")]
+    srv_count = len(servers)
+    srv_line = f"🌐 {srv_count} سرور فعال" if srv_count else ""
+
+    msg = (
+        f"{welcome}\n\n"
+        "╔══════════════════════╗\n"
+        f"║  🌐 <b>{h(BOT_NAME)}</b>\n"
+        "╠══════════════════════╣\n"
+        f"║  ⚡ VLESS + Reality\n"
+        f"║  💰 {fmt(sm.price_per_gb())} / گیگابایت\n"
+        f"║  📦 {sm.min_gb()} – {sm.max_gb()} گیگابایت\n"
+        f"║  💎 سطح: {h(vip_label)}\n"
+        f"║  {srv_line}\n"
+        "╚══════════════════════╝"
+        f"{flash_banner}\n\n"
+        "از منوی زیر انتخاب کنید:"
+    )
 
     await update.message.reply_text(
-        f"{welcome}\n\n"
-        f"🌐 <b>{h(BOT_NAME)}</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚡ کانفیگ VLESS سریع و پایدار\n"
-        f"💰 {fmt(sm.price_per_gb())} / گیگابایت\n"
-        f"📦 {sm.min_gb()} تا {sm.max_gb()} گیگابایت\n"
-        f"💎 سطح شما: {h(vip_label)}"
-        f"{flash_line}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "از منوی زیر انتخاب کنید:",
+        msg,
         parse_mode="HTML",
         reply_markup=_menu_kb_for(user.id)
     )
@@ -681,6 +691,71 @@ async def handle_confirm_order(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode="HTML", reply_markup=cancel_inline_kb()
         )
         return UPLOAD_RECEIPT
+
+    if data.startswith("pay_zp_"):
+        gb = int(data.split("_")[2])
+        total_price = context.user_data.get("total_price", gb * sm.price_per_gb())
+        merchant_id = sm.zarinpal_merchant_id()
+        sandbox = sm.zarinpal_sandbox()
+        bot_info = await context.bot.get_me()
+        callback_url = f"https://t.me/{bot_info.username}"
+        try:
+            import zarinpal
+            result = await zarinpal.request_payment(
+                merchant_id=merchant_id,
+                amount_toman=total_price,
+                description=f"خرید {gb} گیگابایت VPN",
+                callback_url=callback_url,
+                sandbox=sandbox,
+            )
+            context.user_data["zp_authority"] = result["authority"]
+            context.user_data["zp_amount"] = total_price
+            context.user_data["zp_gb"] = gb
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            await query.edit_message_text(
+                "💳 <b>پرداخت آنلاین زرین‌پال</b>\n\n"
+                f"📦 {fmt_gb(gb)}\n"
+                f"💰 مبلغ: <b>{fmt(total_price)}</b>\n\n"
+                "۱. روی دکمه زیر بزنید و پرداخت کنید.\n"
+                "۲. بعد از پرداخت برگشتن به ربات روی «تایید» بزنید.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 رفتن به درگاه پرداخت", url=result["url"])],
+                    [InlineKeyboardButton("✅ پرداخت کردم، تایید کن", callback_data=f"zp_verify_{gb}")],
+                    [InlineKeyboardButton("❌ انصراف", callback_data="zp_cancel")],
+                ])
+            )
+            return ZARINPAL_WAIT
+        except Exception as e:
+            logger.error("ZarinPal request failed: %s", e)
+            await query.answer("❌ خطا در اتصال به درگاه. از روش دیگری پرداخت کنید.", show_alert=True)
+            return CONFIRM_ORDER
+
+    if data.startswith("pay_usdt_"):
+        gb = int(data.split("_")[2])
+        total_price = context.user_data.get("total_price", gb * sm.price_per_gb())
+        rate = sm.usdt_rate()
+        usdt_amount = round(total_price / rate, 2)
+        address = sm.usdt_address()
+        context.user_data["usdt_amount"] = usdt_amount
+        context.user_data["usdt_gb"] = gb
+        context.user_data["usdt_price"] = total_price
+        context.user_data["usdt_address"] = address
+        from keyboards import usdt_payment_kb
+        await query.edit_message_text(
+            "🔷 <b>پرداخت با USDT (TRC20)</b>\n\n"
+            f"📦 {fmt_gb(gb)}\n"
+            f"💰 معادل: <b>{usdt_amount} USDT</b>\n\n"
+            "آدرس کیف پول:\n"
+            f"<code>{h(address)}</code>\n\n"
+            "⚠️ دقیقاً همین مقدار USDT به این آدرس ارسال کنید.\n"
+            "شبکه: <b>TRC20 (ترون)</b>\n\n"
+            "بعد از ارسال روی «بررسی کن» بزنید.",
+            parse_mode="HTML",
+            reply_markup=usdt_payment_kb()
+        )
+        return USDT_WAIT
+
     return CONFIRM_ORDER
 
 
@@ -808,6 +883,173 @@ async def handle_discount_input(update: Update, context: ContextTypes.DEFAULT_TY
     flash_pct = context.user_data.get("flash_pct", 0)
     await update.message.reply_text("حالا حجم خود را انتخاب کنید:", reply_markup=gb_packages_kb(flash_pct))
     return SELECT_GB
+
+
+async def handle_zarinpal_wait(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user = query.from_user
+
+    if data == "zp_cancel":
+        await query.message.reply_text("❌ پرداخت لغو شد.", reply_markup=_menu_kb_for(user.id))
+        context.user_data.clear()
+        return MAIN_MENU
+
+    if data.startswith("zp_verify_"):
+        gb = int(data.split("_")[2])
+        authority = context.user_data.get("zp_authority")
+        amount = context.user_data.get("zp_amount", gb * sm.price_per_gb())
+        if not authority:
+            await query.answer("خطا: اطلاعات پرداخت یافت نشد.", show_alert=True)
+            return MAIN_MENU
+        try:
+            import zarinpal
+            result = await zarinpal.verify_payment(
+                merchant_id=sm.zarinpal_merchant_id(),
+                amount_toman=amount,
+                authority=authority,
+                sandbox=sm.zarinpal_sandbox(),
+            )
+            order_id = create_order(
+                user_id=user.id, username=user.username, full_name=user.full_name,
+                gb_amount=gb, total_price=amount, paid_by_wallet=0
+            )
+            from database import create_crypto_payment, confirm_crypto_payment
+            cp_id = create_crypto_payment(user.id, "zarinpal", amount, authority=authority)
+            confirm_crypto_payment(cp_id, ref_id=result["ref_id"])
+
+            admin_bot = context.bot_data.get("admin_bot_instance")
+            if admin_bot:
+                uname = f"@{user.username}" if user.username else "—"
+                from keyboards import admin_order_kb
+                for aid in ADMIN_IDS:
+                    try:
+                        await admin_bot.send_message(
+                            chat_id=aid,
+                            text=(
+                                "✅ <b>پرداخت آنلاین تایید شد!</b>\n\n"
+                                f"🆔 #{order_id}\n"
+                                f"👤 {h(user.full_name)} | {h(uname)}\n"
+                                f"📦 {fmt_gb(gb)} | 💰 {fmt(amount)}\n"
+                                f"🔑 RefID: <code>{result['ref_id']}</code>\n"
+                                "💳 <b>زرین‌پال</b>"
+                            ),
+                            parse_mode="HTML",
+                            reply_markup=admin_order_kb(order_id)
+                        )
+                    except Exception as e:
+                        logger.error("ZP order notify: %s", e)
+
+            await query.edit_message_text(
+                f"✅ <b>پرداخت تایید شد!</b>\n\n"
+                f"🔑 شماره پیگیری: <code>{result['ref_id']}</code>\n"
+                f"🆔 سفارش: #{order_id}\n"
+                f"📦 {fmt_gb(gb)}\n\n"
+                "⏳ کانفیگ به زودی ارسال می‌شود.",
+                parse_mode="HTML"
+            )
+            context.user_data.clear()
+            return MAIN_MENU
+        except Exception as e:
+            logger.error("ZarinPal verify: %s", e)
+            await query.answer("❌ تایید پرداخت ناموفق. اگر پرداخت انجام دادید با پشتیبانی تماس بگیرید.", show_alert=True)
+            return ZARINPAL_WAIT
+
+    return ZARINPAL_WAIT
+
+
+async def handle_usdt_wait(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user = query.from_user
+
+    if data == "usdt_cancel":
+        await query.message.reply_text("❌ پرداخت لغو شد.", reply_markup=_menu_kb_for(user.id))
+        context.user_data.clear()
+        return MAIN_MENU
+
+    if data == "usdt_check":
+        usdt_amount = context.user_data.get("usdt_amount", 0)
+        address = context.user_data.get("usdt_address", sm.usdt_address())
+        total_price = context.user_data.get("usdt_price", 0)
+        gb = context.user_data.get("usdt_gb", 0)
+
+        await query.edit_message_text(
+            "⏳ در حال بررسی تراکنش...\n\nاگر چند دقیقه پیش ارسال کردید صبور باشید.",
+            parse_mode="HTML"
+        )
+
+        import time
+        import crypto as crypto_mod
+        since_ms = int(time.time() * 1000) - 30 * 60 * 1000  # last 30 minutes
+        transfers = await crypto_mod.get_recent_usdt_transfers(address, since_ms)
+
+        confirmed_tx = None
+        for tx in transfers:
+            amt = crypto_mod.usdt_amount_from_transfer(tx)
+            if abs(amt - usdt_amount) < 0.01:
+                confirmed_tx = tx
+                break
+
+        if confirmed_tx:
+            tx_hash = confirmed_tx.get("transaction_id", "")
+            order_id = create_order(
+                user_id=user.id, username=user.username, full_name=user.full_name,
+                gb_amount=gb, total_price=total_price, paid_by_wallet=0
+            )
+            from database import create_crypto_payment, confirm_crypto_payment
+            cp_id = create_crypto_payment(user.id, "usdt_trc20", total_price, usdt_amount=usdt_amount)
+            confirm_crypto_payment(cp_id, tx_hash=tx_hash)
+
+            admin_bot = context.bot_data.get("admin_bot_instance")
+            if admin_bot:
+                uname = f"@{user.username}" if user.username else "—"
+                from keyboards import admin_order_kb
+                for aid in ADMIN_IDS:
+                    try:
+                        await admin_bot.send_message(
+                            chat_id=aid,
+                            text=(
+                                "🔷 <b>پرداخت USDT تایید شد!</b>\n\n"
+                                f"🆔 #{order_id}\n"
+                                f"👤 {h(user.full_name)} | {h(uname)}\n"
+                                f"📦 {fmt_gb(gb)} | 💰 {fmt(total_price)}\n"
+                                f"🔷 {usdt_amount} USDT\n"
+                                f"TX: <code>{tx_hash[:20]}...</code>"
+                            ),
+                            parse_mode="HTML",
+                            reply_markup=admin_order_kb(order_id)
+                        )
+                    except Exception as e:
+                        logger.error("USDT notify: %s", e)
+
+            await query.edit_message_text(
+                f"✅ <b>پرداخت USDT تایید شد!</b>\n\n"
+                f"🔷 {usdt_amount} USDT دریافت شد\n"
+                f"🆔 سفارش: #{order_id}\n"
+                f"📦 {fmt_gb(gb)}\n\n"
+                "⏳ کانفیگ به زودی ارسال می‌شود.",
+                parse_mode="HTML"
+            )
+            context.user_data.clear()
+            return MAIN_MENU
+        else:
+            from keyboards import usdt_payment_kb
+            await query.edit_message_text(
+                "❌ <b>تراکنشی یافت نشد</b>\n\n"
+                f"۳۰ دقیقه بررسی شد. اگر ارسال کردید:\n"
+                f"• مطمئن شوید شبکه <b>TRC20</b> بوده\n"
+                f"• مقدار دقیقاً <b>{usdt_amount} USDT</b> باشد\n"
+                f"• آدرس: <code>{h(address)}</code>\n\n"
+                "دوباره امتحان کنید یا با پشتیبانی تماس بگیرید.",
+                parse_mode="HTML",
+                reply_markup=usdt_payment_kb()
+            )
+            return USDT_WAIT
+
+    return USDT_WAIT
 
 
 async def handle_receipt_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1371,6 +1613,12 @@ def setup_customer_bot(app: Application, admin_bot_instance=None) -> None:
             ],
             SUPPORT_MESSAGE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_support),
+            ],
+            ZARINPAL_WAIT: [
+                CallbackQueryHandler(handle_zarinpal_wait),
+            ],
+            USDT_WAIT: [
+                CallbackQueryHandler(handle_usdt_wait),
             ],
         },
         fallbacks=[

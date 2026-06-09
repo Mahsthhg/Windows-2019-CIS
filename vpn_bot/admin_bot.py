@@ -104,6 +104,9 @@ SETTINGS_REGISTRY = {
     "points_per_10k":         ("⭐ امتیاز به ازای ۱۰ هزار تومان","int", 1,      100),
     "points_to_toman":        ("💸 ارزش هر امتیاز (تومان)",      "int", 10,     10_000),
     "payment_timeout_min":    ("⏱ مهلت پرداخت (دقیقه)",         "int", 5,      60),
+    "zarinpal_merchant_id": ("🔑 ZarinPal Merchant ID", "str", None, None),
+    "usdt_address":         ("📬 آدرس USDT TRC20",      "str", None, None),
+    "usdt_rate":            ("💱 نرخ USDT به تومان",     "int", 10000, 1_000_000),
 }
 
 TOGGLE_SETTINGS = {
@@ -112,6 +115,9 @@ TOGGLE_SETTINGS = {
     "force_join_enabled": "📢 جوین اجباری",
     "daily_report_enabled": "📊 گزارش روزانه",
     "multi_card_enabled": "💳 چند کارت",
+    "zarinpal_enabled": "💳 زرین‌پال",
+    "zarinpal_sandbox": "🧪 سندباکس زرین‌پال",
+    "usdt_enabled":     "🔷 USDT",
 }
 
 
@@ -250,6 +256,22 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    if data == "cfg_menu_zarinpal":
+        from keyboards import admin_settings_zarinpal_kb
+        await query.edit_message_text("💳 <b>تنظیمات زرین‌پال</b>", parse_mode="HTML",
+            reply_markup=admin_settings_zarinpal_kb(
+                sm.zarinpal_enabled(), sm.zarinpal_merchant_id(), sm.zarinpal_sandbox()
+            ))
+        return
+
+    if data == "cfg_menu_usdt":
+        from keyboards import admin_settings_usdt_kb
+        await query.edit_message_text("🔷 <b>تنظیمات USDT</b>", parse_mode="HTML",
+            reply_markup=admin_settings_usdt_kb(
+                sm.usdt_enabled(), sm.usdt_address(), sm.usdt_rate()
+            ))
+        return
+
     if data.startswith("cfg_toggle_"):
         key = data[len("cfg_toggle_"):]
         current = sm._bool(key)
@@ -266,6 +288,18 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif key == "force_join_enabled":
             await query.edit_message_text("📢 <b>جوین اجباری</b>", parse_mode="HTML",
                 reply_markup=admin_fj_kb(sm.force_join_enabled(), sm.force_join_channels()))
+        elif key in ("zarinpal_enabled", "zarinpal_sandbox", "zarinpal_merchant_id"):
+            from keyboards import admin_settings_zarinpal_kb
+            await query.edit_message_text("💳 <b>تنظیمات زرین‌پال</b>", parse_mode="HTML",
+                reply_markup=admin_settings_zarinpal_kb(
+                    sm.zarinpal_enabled(), sm.zarinpal_merchant_id(), sm.zarinpal_sandbox()
+                ))
+        elif key in ("usdt_enabled", "usdt_address", "usdt_rate"):
+            from keyboards import admin_settings_usdt_kb
+            await query.edit_message_text("🔷 <b>تنظیمات USDT</b>", parse_mode="HTML",
+                reply_markup=admin_settings_usdt_kb(
+                    sm.usdt_enabled(), sm.usdt_address(), sm.usdt_rate()
+                ))
         return
 
     if data.startswith("cfg_set_"):
