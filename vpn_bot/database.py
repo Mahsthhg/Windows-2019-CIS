@@ -206,16 +206,16 @@ def get_bonus_mb(uid) -> int:
 def deduct_bonus_mb(uid, mb):
     with _conn() as c: c.execute("UPDATE users SET bonus_mb=MAX(0,bonus_mb-?) WHERE user_id=?", (mb, uid))
 
-def redeem_points_to_wallet(uid, points: int, rate: int) -> bool:
+def redeem_points_to_wallet(uid, points: int, toman: int) -> bool:
+    """Deduct points from user and add toman to wallet. toman is the pre-computed amount."""
     with _conn() as c:
         r = c.execute("SELECT loyalty_points FROM users WHERE user_id=?", (uid,)).fetchone()
         if not r or r[0] < points: return False
-        amount = points * rate
         u = c.execute("SELECT username,full_name FROM users WHERE user_id=?", (uid,)).fetchone()
         c.execute("UPDATE users SET loyalty_points=loyalty_points-?,wallet_balance=wallet_balance+? WHERE user_id=?",
-                  (points, amount, uid))
+                  (points, toman, uid))
         c.execute("INSERT INTO wallet_transactions(user_id,username,full_name,amount,type,status,note) VALUES(?,?,?,?,'bonus','approved','تبدیل امتیاز')",
-                  (uid, u['username'] if u else None, u['full_name'] if u else None, amount))
+                  (uid, u['username'] if u else None, u['full_name'] if u else None, toman))
         return True
 
 # ─── Servers ──────────────────────────────────────────────────────────────────
@@ -244,13 +244,21 @@ def get_default_server() -> dict | None:
 def add_server(name, location, flag='🌍', max_users=200) -> int:
     with _conn() as c:
         has = c.execute("SELECT COUNT(*) FROM servers").fetchone()[0]
-        c.execute("INSERT INTO servers(name,location,flag,max_users,is_default) VALUES(?,?,?,?,?)",
-                  (name, location, flag, max_users, 1 if has == 0 else 0))
-        return c.lastrowid
+        cur = c.execute("INSERT INTO servers(name,location,flag,max_users,is_default) VALUES(?,?,?,?,?)",
+                        (name, location, flag, max_users, 1 if has == 0 else 0))
+        return cur.lastrowid
 
 def update_server(sid, **kw):
     fields = ','.join(f"{k}=?" for k in kw)
     with _conn() as c: c.execute(f"UPDATE servers SET {fields} WHERE id=?", (*kw.values(), sid))
+
+def update_server_load(sid, pct: int):
+    """Set current_users based on pct of max_users."""
+    with _conn() as c:
+        r = c.execute("SELECT max_users FROM servers WHERE id=?", (sid,)).fetchone()
+        if r:
+            new_users = int((r[0] or 200) * max(0, min(100, pct)) / 100)
+            c.execute("UPDATE servers SET current_users=? WHERE id=?", (new_users, sid))
 
 def delete_server(sid):
     with _conn() as c: c.execute("DELETE FROM servers WHERE id=?", (sid,))
@@ -274,12 +282,12 @@ def create_order(user_id, username, full_name, gb_amount, total_price,
                  receipt_file_id=None, paid_by_wallet=0, is_trial=0,
                  discount_code=None, discount_pct=0, server_id=None) -> int:
     with _conn() as c:
-        c.execute("""INSERT INTO orders(user_id,username,full_name,gb_amount,total_price,
+        cur = c.execute("""INSERT INTO orders(user_id,username,full_name,gb_amount,total_price,
                      receipt_file_id,paid_by_wallet,is_trial,discount_code,discount_pct,server_id)
                      VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                   (user_id, username, full_name, gb_amount, total_price,
                    receipt_file_id, paid_by_wallet, is_trial, discount_code, discount_pct, server_id))
-        oid = c.lastrowid
+        oid = cur.lastrowid
         c.execute("UPDATE users SET total_orders=total_orders+1 WHERE user_id=?", (user_id,))
         return oid
 
@@ -375,9 +383,9 @@ def deduct_wallet(uid, amount, order_id=None) -> bool:
 def create_wallet_charge(uid, amount, receipt_file_id) -> int:
     with _conn() as c:
         u = c.execute("SELECT username,full_name FROM users WHERE user_id=?", (uid,)).fetchone()
-        c.execute("INSERT INTO wallet_transactions(user_id,username,full_name,amount,type,receipt_file_id) VALUES(?,?,?,?,'charge',?)",
-                  (uid, u['username'] if u else None, u['full_name'] if u else None, amount, receipt_file_id))
-        return c.lastrowid
+        cur = c.execute("INSERT INTO wallet_transactions(user_id,username,full_name,amount,type,receipt_file_id) VALUES(?,?,?,?,'charge',?)",
+                        (uid, u['username'] if u else None, u['full_name'] if u else None, amount, receipt_file_id))
+        return cur.lastrowid
 
 def approve_wallet_charge(tx_id) -> dict | None:
     with _conn() as c:
@@ -416,9 +424,9 @@ def admin_adjust_wallet(uid, amount):
 
 def create_ticket(uid, username, full_name, message) -> int:
     with _conn() as c:
-        c.execute("INSERT INTO tickets(user_id,username,full_name,message) VALUES(?,?,?,?)",
-                  (uid, username, full_name, message))
-        return c.lastrowid
+        cur = c.execute("INSERT INTO tickets(user_id,username,full_name,message) VALUES(?,?,?,?)",
+                        (uid, username, full_name, message))
+        return cur.lastrowid
 
 def close_ticket(tid, reply) -> int | None:
     with _conn() as c:
@@ -514,9 +522,9 @@ def credit_reseller(uid, sale_amount: int, commission_pct: int):
 
 def create_flash_sale(name, discount_pct, starts_at, ends_at) -> int:
     with _conn() as c:
-        c.execute("INSERT INTO flash_sales(name,discount_pct,starts_at,ends_at) VALUES(?,?,?,?)",
-                  (name, discount_pct, starts_at, ends_at))
-        return c.lastrowid
+        cur = c.execute("INSERT INTO flash_sales(name,discount_pct,starts_at,ends_at) VALUES(?,?,?,?)",
+                        (name, discount_pct, starts_at, ends_at))
+        return cur.lastrowid
 
 def get_active_flash_sale() -> dict | None:
     with _conn() as c:
@@ -552,9 +560,9 @@ def get_unnotified_flash_sales() -> list:
 
 def create_lottery(name, prize_gb, prize_toman, draw_at) -> int:
     with _conn() as c:
-        c.execute("INSERT INTO lottery(name,prize_gb,prize_toman,draw_at) VALUES(?,?,?,?)",
-                  (name, prize_gb, prize_toman, draw_at))
-        return c.lastrowid
+        cur = c.execute("INSERT INTO lottery(name,prize_gb,prize_toman,draw_at) VALUES(?,?,?,?)",
+                        (name, prize_gb, prize_toman, draw_at))
+        return cur.lastrowid
 
 def get_active_lottery() -> dict | None:
     with _conn() as c:
@@ -652,6 +660,7 @@ def log_admin(admin_id, action, details=""):
         c.execute("INSERT INTO admin_logs(admin_id,action,details) VALUES(?,?,?)",
                   (admin_id, action, details))
 
-def get_admin_logs(limit=50) -> list:
+def get_admin_logs(limit=50, offset=0) -> list:
     with _conn() as c:
-        return [dict(r) for r in c.execute("SELECT * FROM admin_logs ORDER BY created_at DESC LIMIT ?", (limit,))]
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM admin_logs ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset))]

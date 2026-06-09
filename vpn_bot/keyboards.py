@@ -370,7 +370,7 @@ def admin_resellers_kb(resellers: list) -> InlineKeyboardMarkup:
     for r in resellers:
         status = "🟢" if r.get('is_active') else "🔴"
         rows.append([InlineKeyboardButton(
-            f"{status} {r.get('full_name') or r.get('username') or r['user_id']}  |  {r['credit']:,} تومان",
+            f"{status} {r.get('full_name') or r.get('username') or r['user_id']}  |  {r.get('balance', 0):,} تومان",
             callback_data=f"adm_res_{r['user_id']}"
         )])
     rows.append([InlineKeyboardButton("➕ ریسلر جدید",  callback_data="adm_res_add")])
@@ -419,7 +419,7 @@ def admin_flash_detail_kb(sale_id: int, is_active: bool) -> InlineKeyboardMarkup
 def admin_lottery_kb(lotteries: list) -> InlineKeyboardMarkup:
     rows = []
     for lt in lotteries:
-        status = "🟢" if lt.get('is_active') else "✅"
+        status = "🟢" if lt.get('status') == 'active' else "✅"
         rows.append([InlineKeyboardButton(
             f"{status} {lt['name']}",
             callback_data=f"adm_lot_{lt['id']}"

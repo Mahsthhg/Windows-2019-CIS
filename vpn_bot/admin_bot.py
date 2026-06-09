@@ -230,6 +230,26 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[ST] = S_WAIT_PKG
         return
 
+    if data == "cfg_menu_multicards":
+        multi_enabled = sm.multi_card_enabled()
+        cards = sm.card_numbers()
+        cards_text = "\n".join(f"• {c.get('number','?')} ({c.get('bank','?')})" for c in cards) if cards else "کارتی ثبت نشده"
+        status = "✅ فعال" if multi_enabled else "❌ غیرفعال"
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        toggle_label = "🔴 غیرفعال کن" if multi_enabled else "🟢 فعال کن"
+        await query.edit_message_text(
+            f"💳 <b>سیستم چند کارت</b>\n\n"
+            f"وضعیت: {status}\n\n"
+            f"<b>کارت‌های فعال:</b>\n{cards_text}\n\n"
+            "برای افزودن کارت، ابتدا سیستم تک‌کارت را با شماره کارت اصلی پر کنید.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(toggle_label, callback_data="cfg_toggle_multi_card_enabled")],
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="cfg_menu_payment")],
+            ])
+        )
+        return
+
     if data.startswith("cfg_toggle_"):
         key = data[len("cfg_toggle_"):]
         current = sm._bool(key)

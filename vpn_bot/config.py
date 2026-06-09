@@ -8,13 +8,14 @@ CUSTOMER_BOT_TOKEN = os.getenv("CUSTOMER_BOT_TOKEN", "YOUR_CUSTOMER_BOT_TOKEN")
 ADMIN_BOT_TOKEN    = os.getenv("ADMIN_BOT_TOKEN",    "YOUR_ADMIN_BOT_TOKEN")
 
 # ─── Admin Settings ───────────────────────────────────────────────────────────
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 # چند ادمین با کاما: 123,456,789
 ADMIN_IDS = [
     int(x.strip())
     for x in os.getenv("ADMIN_IDS", os.getenv("ADMIN_CHAT_ID", "0")).split(",")
     if x.strip()
 ]
+# ADMIN_CHAT_ID is the first admin in the list
+ADMIN_CHAT_ID = ADMIN_IDS[0] if ADMIN_IDS else 0
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@your_support")
 
 # ─── Pricing ──────────────────────────────────────────────────────────────────
