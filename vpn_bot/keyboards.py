@@ -47,24 +47,39 @@ def gb_packages_kb(flash_pct: int = 0) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def confirm_order_kb(gb: int, wallet_ok=False, points_ok=False) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton("✅ پرداخت با کارت", callback_data=f"pay_card_{gb}")],
-    ]
+def confirm_order_kb(gb: int, wallet_ok=False, points_ok=False,
+                     zarinpal_ok=False, usdt_ok=False) -> InlineKeyboardMarkup:
+    import settings_manager as sm
+    rows = []
     if wallet_ok:
-        rows.insert(0, [InlineKeyboardButton(
-            "💰 پرداخت از کیف پول (آنی)", callback_data=f"pay_wallet_{gb}"
-        )])
+        rows.append([InlineKeyboardButton("💰 پرداخت از کیف پول (آنی)", callback_data=f"pay_wallet_{gb}")])
     if points_ok:
-        rows.insert(0, [InlineKeyboardButton(
-            "⭐ پرداخت با امتیاز", callback_data=f"pay_points_{gb}"
-        )])
+        rows.append([InlineKeyboardButton("⭐ پرداخت با امتیاز", callback_data=f"pay_points_{gb}")])
+    if zarinpal_ok:
+        rows.append([InlineKeyboardButton("💳 پرداخت آنلاین — زرین‌پال", callback_data=f"pay_zp_{gb}")])
+    if usdt_ok:
+        rows.append([InlineKeyboardButton("🔷 پرداخت با USDT (TRC20)", callback_data=f"pay_usdt_{gb}")])
+    rows.append([InlineKeyboardButton("💵 پرداخت با کارت (دستی)", callback_data=f"pay_card_{gb}")])
     rows += [
         [InlineKeyboardButton("🎁 کد تخفیف دارم",  callback_data="apply_discount")],
         [InlineKeyboardButton("🔙 تغییر حجم",       callback_data="back_buy")],
         [InlineKeyboardButton("❌ انصراف",           callback_data="cancel")],
     ]
     return InlineKeyboardMarkup(rows)
+
+
+def zarinpal_verify_kb(gb: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ پرداخت کردم، تایید کن", callback_data=f"zp_verify_{gb}")],
+        [InlineKeyboardButton("❌ انصراف از پرداخت",      callback_data="zp_cancel")],
+    ])
+
+
+def usdt_payment_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ ارسال کردم، بررسی کن", callback_data="usdt_check")],
+        [InlineKeyboardButton("❌ انصراف از پرداخت",     callback_data="usdt_cancel")],
+    ])
 
 
 def server_select_kb(servers: list) -> InlineKeyboardMarkup:
@@ -242,6 +257,8 @@ def admin_settings_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🛡 کپچا و امنیت",     callback_data="cfg_menu_security")],
         [InlineKeyboardButton("📋 بسته‌های GB",      callback_data="cfg_menu_packages")],
         [InlineKeyboardButton("⭐ سیستم امتیاز",     callback_data="cfg_menu_points")],
+        [InlineKeyboardButton("💳 زرین‌پال",            callback_data="cfg_menu_zarinpal")],
+        [InlineKeyboardButton("🔷 USDT (کریپتو)",       callback_data="cfg_menu_usdt")],
         [InlineKeyboardButton("❌ بستن",              callback_data="cfg_close")],
     ])
 
@@ -305,6 +322,29 @@ def admin_settings_points_kb(per10k: int, to_toman: int) -> InlineKeyboardMarkup
         [InlineKeyboardButton(f"⭐ امتیاز به ازای هر ۱۰ هزار: {per10k}", callback_data="cfg_set_points_per_10k")],
         [InlineKeyboardButton(f"💸 ارزش هر امتیاز: {to_toman} تومان",    callback_data="cfg_set_points_to_toman")],
         [InlineKeyboardButton("🔙 بازگشت",                                callback_data="cfg_back")],
+    ])
+
+
+def admin_settings_zarinpal_kb(enabled: bool, merchant_id: str, sandbox: bool) -> InlineKeyboardMarkup:
+    status = "✅ فعال" if enabled else "❌ غیرفعال"
+    sb = "sandbox ✅" if sandbox else "live 🔴"
+    mid = f"...{merchant_id[-8:]}" if len(merchant_id) > 8 else (merchant_id or "تنظیم نشده")
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"وضعیت: {status}", callback_data="cfg_toggle_zarinpal_enabled")],
+        [InlineKeyboardButton(f"🔑 Merchant ID: {mid}", callback_data="cfg_set_zarinpal_merchant_id")],
+        [InlineKeyboardButton(f"حالت: {sb}", callback_data="cfg_toggle_zarinpal_sandbox")],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data="cfg_back")],
+    ])
+
+
+def admin_settings_usdt_kb(enabled: bool, address: str, rate: int) -> InlineKeyboardMarkup:
+    status = "✅ فعال" if enabled else "❌ غیرفعال"
+    addr = f"{address[:6]}...{address[-4:]}" if len(address) > 10 else (address or "تنظیم نشده")
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"وضعیت: {status}", callback_data="cfg_toggle_usdt_enabled")],
+        [InlineKeyboardButton(f"📬 آدرس: {addr}", callback_data="cfg_set_usdt_address")],
+        [InlineKeyboardButton(f"💱 نرخ: 1 USDT = {rate:,} تومان", callback_data="cfg_set_usdt_rate")],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data="cfg_back")],
     ])
 
 

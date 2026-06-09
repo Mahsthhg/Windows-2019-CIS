@@ -35,6 +35,12 @@ def init_settings():
         "daily_report_enabled":   "true",
         "multi_card_enabled":     "false",
         "card_numbers":           json.dumps([]),
+        "zarinpal_enabled":       "false",
+        "zarinpal_merchant_id":   "",
+        "zarinpal_sandbox":       "true",
+        "usdt_enabled":           "false",
+        "usdt_address":           "",
+        "usdt_rate":              "90000",   # 1 USDT = 90,000 Toman (admin sets this)
     }
     c = _db()
     try:
@@ -101,6 +107,13 @@ def payment_timeout_min() -> int: return _int("payment_timeout_min", 15)
 def daily_report_enabled() -> bool: return _bool("daily_report_enabled", True)
 def multi_card_enabled() -> bool: return _bool("multi_card_enabled", False)
 def card_numbers() -> list:      return _list("card_numbers", [])
+
+def zarinpal_enabled() -> bool:     return _bool("zarinpal_enabled", False)
+def zarinpal_merchant_id() -> str:  return get("zarinpal_merchant_id", "")
+def zarinpal_sandbox() -> bool:     return _bool("zarinpal_sandbox", True)
+def usdt_enabled() -> bool:         return _bool("usdt_enabled", False)
+def usdt_address() -> str:          return get("usdt_address", "")
+def usdt_rate() -> int:             return _int("usdt_rate", 90000)
 
 def get_payment_card() -> dict:
     """Returns active card info, rotating if multi-card enabled."""

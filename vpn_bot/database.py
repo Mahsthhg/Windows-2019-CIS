@@ -138,6 +138,19 @@ def init_db():
             admin_id INTEGER, action TEXT, details TEXT,
             created_at TEXT DEFAULT (datetime('now','localtime'))
         );
+        CREATE TABLE IF NOT EXISTS crypto_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            type TEXT DEFAULT 'zarinpal',   -- 'zarinpal' | 'usdt_trc20'
+            amount_toman INTEGER NOT NULL,
+            authority TEXT,                  -- ZarinPal authority
+            ref_id TEXT,                     -- ZarinPal ref_id after verify
+            usdt_amount REAL,                -- USDT amount expected
+            tx_hash TEXT,                    -- TRC20 tx hash after confirm
+            status TEXT DEFAULT 'pending',   -- pending | confirmed | expired | failed
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            confirmed_at TEXT
+        );
         """)
 
 # ─── Users ────────────────────────────────────────────────────────────────────
@@ -664,3 +677,40 @@ def get_admin_logs(limit=50, offset=0) -> list:
     with _conn() as c:
         return [dict(r) for r in c.execute(
             "SELECT * FROM admin_logs ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset))]
+
+# ─── Crypto Payments ──────────────────────────────────────────────────────────
+
+def create_crypto_payment(user_id: int, ptype: str, amount_toman: int,
+                          authority: str = None, usdt_amount: float = None) -> int:
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT INTO crypto_payments(user_id,type,amount_toman,authority,usdt_amount) VALUES(?,?,?,?,?)",
+            (user_id, ptype, amount_toman, authority, usdt_amount)
+        )
+        return cur.lastrowid
+
+def confirm_crypto_payment(payment_id: int, ref_id: str = None, tx_hash: str = None):
+    with _conn() as c:
+        c.execute(
+            "UPDATE crypto_payments SET status='confirmed',ref_id=?,tx_hash=?,confirmed_at=datetime('now','localtime') WHERE id=?",
+            (ref_id, tx_hash, payment_id)
+        )
+
+def get_pending_usdt_payments() -> list:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT * FROM crypto_payments WHERE type='usdt_trc20' AND status='pending' ORDER BY created_at"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+def get_crypto_payment_by_authority(authority: str) -> dict | None:
+    with _conn() as c:
+        r = c.execute("SELECT * FROM crypto_payments WHERE authority=?", (authority,)).fetchone()
+        return dict(r) if r else None
+
+def expire_old_crypto_payments(minutes: int = 30):
+    with _conn() as c:
+        c.execute(
+            "UPDATE crypto_payments SET status='expired' WHERE status='pending' AND created_at < datetime('now','localtime',?)",
+            (f"-{minutes} minutes",)
+        )

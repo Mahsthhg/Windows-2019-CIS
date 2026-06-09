@@ -42,7 +42,9 @@ logger = logging.getLogger(__name__)
     WALLET_AMOUNT, WALLET_RECEIPT,
     SUPPORT_MESSAGE,
     CAPTCHA,
-) = range(10)
+    ZARINPAL_WAIT,
+    USDT_WAIT,
+) = range(12)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -55,10 +57,16 @@ async def _unjoined(bot, user_id: int) -> list:
     for ch in channels:
         try:
             m = await bot.get_chat_member(chat_id=ch, user_id=user_id)
-            if m.status in ("left", "kicked", "banned"):
+            if m.status in ("left", "kicked"):
                 out.append(ch)
-        except Exception:
-            out.append(ch)
+        except Exception as e:
+            err = str(e).lower()
+            # Only mark as missing if we're SURE they're not a member
+            # If bot lacks permission or channel not found, skip silently
+            if "user not found" in err or "member_not_found" in err:
+                out.append(ch)
+            else:
+                logger.warning("Force join check error for %s in %s: %s", user_id, ch, e)
     return out
 
 
@@ -361,7 +369,10 @@ async def handle_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         missing = await _unjoined(context.bot, user.id)
         if missing:
             await query.answer("هنوز عضو نشدید!", show_alert=True)
-            await query.edit_message_reply_markup(reply_markup=join_required_kb(missing))
+            try:
+                await query.edit_message_reply_markup(reply_markup=join_required_kb(missing))
+            except Exception:
+                pass
         else:
             await query.answer("✅ عضویت تایید شد!")
             try:
@@ -619,7 +630,10 @@ async def _show_order_confirm(msg_or_query, context: ContextTypes.DEFAULT_TYPE, 
         f"💼 موجودی کیف پول: {fmt(wallet_bal)}\n"
         "━━━━━━━━━━━━━━━━━━━━━━"
     )
-    kb = confirm_order_kb(gb, wallet_ok=wallet_ok, points_ok=points_ok)
+    zarinpal_ok = sm.zarinpal_enabled() and bool(sm.zarinpal_merchant_id())
+    usdt_ok = sm.usdt_enabled() and bool(sm.usdt_address())
+    kb = confirm_order_kb(gb, wallet_ok=wallet_ok, points_ok=points_ok,
+                          zarinpal_ok=zarinpal_ok, usdt_ok=usdt_ok)
     if hasattr(msg_or_query, "edit_message_text"):
         await msg_or_query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
     else:
