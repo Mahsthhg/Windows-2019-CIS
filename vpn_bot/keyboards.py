@@ -3,14 +3,17 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMa
 
 # ─── Customer Reply Keyboards ─────────────────────────────────────────────────
 
-def main_menu_kb(show_trial=False) -> ReplyKeyboardMarkup:
+def main_menu_kb(show_trial=False, show_lottery=False) -> ReplyKeyboardMarkup:
     import settings_manager as sm
     rows = [
         ["🛒 خرید کانفیگ",    "💰 کیف پول"],
         ["📦 سفارشات من",     "👤 پروفایل من"],
+        ["🌐 وضعیت سرورها",  "⭐ امتیازات من"],
         ["📚 راهنمای نصب",    "👥 دعوت دوستان"],
         ["💬 پشتیبانی",       "ℹ️ درباره ما"],
     ]
+    if show_lottery:
+        rows.insert(0, ["🎰 قرعه‌کشی"])
     if show_trial and sm.free_trial_enabled():
         rows.insert(0, ["🎯 آزمایش رایگان"])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -22,22 +25,29 @@ def cancel_reply_kb() -> ReplyKeyboardMarkup:
 
 # ─── Customer Inline Keyboards ────────────────────────────────────────────────
 
-def gb_packages_kb() -> InlineKeyboardMarkup:
+def gb_packages_kb(flash_pct: int = 0) -> InlineKeyboardMarkup:
     import settings_manager as sm
     ppg = sm.price_per_gb()
     rows = []
     for gb in sm.gb_packages():
-        price = gb * ppg
-        rows.append([InlineKeyboardButton(
-            f"📦 {gb} گیگ   ←   {price:,} تومان",
-            callback_data=f"buy_{gb}"
-        )])
+        base = gb * ppg
+        if flash_pct:
+            discounted = int(base * (100 - flash_pct) / 100)
+            rows.append([InlineKeyboardButton(
+                f"📦 {gb} گیگ  〈 ~~{base:,}~~ ← {discounted:,} تومان 🔥{flash_pct}٪〉",
+                callback_data=f"buy_{gb}"
+            )])
+        else:
+            rows.append([InlineKeyboardButton(
+                f"📦 {gb} گیگ   ←   {base:,} تومان",
+                callback_data=f"buy_{gb}"
+            )])
     rows.append([InlineKeyboardButton("✏️ حجم دلخواه", callback_data="buy_custom")])
     rows.append([InlineKeyboardButton("🔙 بازگشت",    callback_data="back_main")])
     return InlineKeyboardMarkup(rows)
 
 
-def confirm_order_kb(gb: int, wallet_ok=False) -> InlineKeyboardMarkup:
+def confirm_order_kb(gb: int, wallet_ok=False, points_ok=False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("✅ پرداخت با کارت", callback_data=f"pay_card_{gb}")],
     ]
@@ -45,11 +55,28 @@ def confirm_order_kb(gb: int, wallet_ok=False) -> InlineKeyboardMarkup:
         rows.insert(0, [InlineKeyboardButton(
             "💰 پرداخت از کیف پول (آنی)", callback_data=f"pay_wallet_{gb}"
         )])
+    if points_ok:
+        rows.insert(0, [InlineKeyboardButton(
+            "⭐ پرداخت با امتیاز", callback_data=f"pay_points_{gb}"
+        )])
     rows += [
         [InlineKeyboardButton("🎁 کد تخفیف دارم",  callback_data="apply_discount")],
         [InlineKeyboardButton("🔙 تغییر حجم",       callback_data="back_buy")],
         [InlineKeyboardButton("❌ انصراف",           callback_data="cancel")],
     ]
+    return InlineKeyboardMarkup(rows)
+
+
+def server_select_kb(servers: list) -> InlineKeyboardMarkup:
+    rows = []
+    for s in servers:
+        load_bar = _load_bar(s.get('load_pct', 0))
+        flag = s.get('flag', '🌐')
+        rows.append([InlineKeyboardButton(
+            f"{flag} {s['name']}  {load_bar}",
+            callback_data=f"srv_{s['id']}"
+        )])
+    rows.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_buy")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -85,10 +112,24 @@ def wallet_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def order_config_kb(order_id: int) -> InlineKeyboardMarkup:
+def points_kb(points: int, rate: int) -> InlineKeyboardMarkup:
+    toman = points * rate
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 مشاهده کانفیگ",  callback_data=f"viewconfig_{order_id}")],
-        [InlineKeyboardButton("🔗 لینک Sub",        callback_data=f"viewsub_{order_id}")],
+        [InlineKeyboardButton(
+            f"💸 تبدیل {points} امتیاز به {toman:,} تومان",
+            callback_data="redeem_points"
+        )],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")],
+    ])
+
+
+def order_config_kb(order_id: int, auto_renew: bool = False) -> InlineKeyboardMarkup:
+    renew_label = "🔄 تمدید خودکار: ✅" if auto_renew else "🔄 تمدید خودکار: ❌"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 مشاهده کانفیگ",    callback_data=f"viewconfig_{order_id}")],
+        [InlineKeyboardButton("🔗 لینک Sub",          callback_data=f"viewsub_{order_id}")],
+        [InlineKeyboardButton("🛒 تمدید سرویس",       callback_data=f"renew_{order_id}")],
+        [InlineKeyboardButton(renew_label,             callback_data=f"autorenew_{order_id}")],
     ])
 
 
@@ -97,6 +138,33 @@ def captcha_kb(choices: list) -> InlineKeyboardMarkup:
         InlineKeyboardButton(str(c), callback_data=f"cap_{c}")
         for c in choices
     ]])
+
+
+def lottery_kb(lottery_id: int, entered: bool) -> InlineKeyboardMarkup:
+    if entered:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ شما ثبت‌نام کرده‌اید", callback_data="noop")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")],
+        ])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎟 شرکت در قرعه‌کشی", callback_data=f"enter_lottery_{lottery_id}")],
+        [InlineKeyboardButton("🔙 بازگشت",            callback_data="back_main")],
+    ])
+
+
+def servers_status_kb(servers: list) -> InlineKeyboardMarkup:
+    rows = []
+    for s in servers:
+        load = s.get('load_pct', 0)
+        bar  = _load_bar(load)
+        flag = s.get('flag', '🌐')
+        status = "🟢" if s.get('is_active') else "🔴"
+        rows.append([InlineKeyboardButton(
+            f"{status} {flag} {s['name']}  {bar}  ({load}٪)",
+            callback_data="noop"
+        )])
+    rows.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")])
+    return InlineKeyboardMarkup(rows)
 
 
 # ─── Force Join ───────────────────────────────────────────────────────────────
@@ -123,8 +191,10 @@ def admin_main_kb() -> ReplyKeyboardMarkup:
         ["📢 پیام همگانی",        "👥 کاربران"],
         ["🎫 کد تخفیف",          "📤 خروجی CSV"],
         ["📈 گزارش درآمد",       "⚙️ تنظیمات"],
-        ["📢 جوین اجباری",       "👥 زیرمجموعه"],
-        ["🔄 ریستارت",           "⚙️ راهنما"],
+        ["🌐 سرورها",            "👨‍💼 ریسلرها"],
+        ["🔥 فلش سیل",           "🎰 قرعه‌کشی"],
+        ["📜 لاگ ادمین",          "📢 جوین اجباری"],
+        ["👥 زیرمجموعه",         "🔄 ریستارت"],
     ], resize_keyboard=True)
 
 
@@ -171,6 +241,7 @@ def admin_settings_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💼 کیف پول",          callback_data="cfg_menu_wallet")],
         [InlineKeyboardButton("🛡 کپچا و امنیت",     callback_data="cfg_menu_security")],
         [InlineKeyboardButton("📋 بسته‌های GB",      callback_data="cfg_menu_packages")],
+        [InlineKeyboardButton("⭐ سیستم امتیاز",     callback_data="cfg_menu_points")],
         [InlineKeyboardButton("❌ بستن",              callback_data="cfg_close")],
     ])
 
@@ -186,10 +257,11 @@ def admin_settings_pricing_kb(ppg: int, mn: int, mx: int) -> InlineKeyboardMarku
 
 def admin_settings_payment_kb(cn: str, ch: str, bn: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"💳 شماره کارت: {cn[-4:]}****", callback_data="cfg_set_card_number")],
+        [InlineKeyboardButton(f"💳 شماره کارت: ...{cn[-4:]}", callback_data="cfg_set_card_number")],
         [InlineKeyboardButton(f"👤 نام: {ch}",                  callback_data="cfg_set_card_holder")],
         [InlineKeyboardButton(f"🏦 بانک: {bn}",                 callback_data="cfg_set_bank_name")],
         [InlineKeyboardButton("💬 پشتیبانی username",           callback_data="cfg_set_support_username")],
+        [InlineKeyboardButton("💳 چند کارت",                    callback_data="cfg_menu_multicards")],
         [InlineKeyboardButton("🔙 بازگشت",                      callback_data="cfg_back")],
     ])
 
@@ -198,7 +270,7 @@ def admin_settings_referral_kb(bonus_mb: int, bonus_toman: int, min_p: int) -> I
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"📡 جایزه MB: {bonus_mb} مگ",    callback_data="cfg_set_referral_bonus_mb")],
         [InlineKeyboardButton(f"💵 جایزه تومان: {bonus_toman:,}", callback_data="cfg_set_referral_bonus_toman")],
-        [InlineKeyboardButton(f"🛒 حداقل خرید برای جایزه: {min_p}", callback_data="cfg_set_referral_min_purchases")],
+        [InlineKeyboardButton(f"🛒 حداقل خرید: {min_p}",        callback_data="cfg_set_referral_min_purchases")],
         [InlineKeyboardButton("🔙 بازگشت",                       callback_data="cfg_back")],
     ])
 
@@ -228,6 +300,14 @@ def admin_settings_security_kb(captcha: bool, rate: int) -> InlineKeyboardMarkup
     ])
 
 
+def admin_settings_points_kb(per10k: int, to_toman: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"⭐ امتیاز به ازای هر ۱۰ هزار: {per10k}", callback_data="cfg_set_points_per_10k")],
+        [InlineKeyboardButton(f"💸 ارزش هر امتیاز: {to_toman} تومان",    callback_data="cfg_set_points_to_toman")],
+        [InlineKeyboardButton("🔙 بازگشت",                                callback_data="cfg_back")],
+    ])
+
+
 # ─── Admin Force Join Panel ───────────────────────────────────────────────────
 
 def admin_fj_kb(enabled: bool, channels: list) -> InlineKeyboardMarkup:
@@ -252,3 +332,127 @@ def admin_referral_panel_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📊 آمار کلی معرفی‌ها",   callback_data="ref_stats")],
         [InlineKeyboardButton("❌ بستن",                  callback_data="ref_close")],
     ])
+
+
+# ─── Admin Servers Panel ──────────────────────────────────────────────────────
+
+def admin_servers_kb(servers: list) -> InlineKeyboardMarkup:
+    rows = []
+    for s in servers:
+        status = "🟢" if s.get('is_active') else "🔴"
+        default_mark = " ★" if s.get('is_default') else ""
+        rows.append([InlineKeyboardButton(
+            f"{status} {s.get('flag','🌐')} {s['name']}{default_mark}",
+            callback_data=f"adm_srv_{s['id']}"
+        )])
+    rows.append([InlineKeyboardButton("➕ افزودن سرور",  callback_data="adm_srv_add")])
+    rows.append([InlineKeyboardButton("❌ بستن",          callback_data="adm_srv_close")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_server_detail_kb(server_id: int, is_active: bool, is_default: bool) -> InlineKeyboardMarkup:
+    toggle_label = "🔴 غیرفعال کن" if is_active else "🟢 فعال کن"
+    default_label = "★ پیش‌فرض (فعال)" if is_default else "☆ تنظیم به عنوان پیش‌فرض"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(toggle_label,  callback_data=f"adm_srv_toggle_{server_id}")],
+        [InlineKeyboardButton(default_label, callback_data=f"adm_srv_default_{server_id}")],
+        [InlineKeyboardButton("✏️ ویرایش نام",  callback_data=f"adm_srv_rename_{server_id}")],
+        [InlineKeyboardButton("📊 آپدیت لود",   callback_data=f"adm_srv_load_{server_id}")],
+        [InlineKeyboardButton("🗑 حذف سرور",    callback_data=f"adm_srv_del_{server_id}")],
+        [InlineKeyboardButton("🔙 بازگشت",      callback_data="adm_srv_back")],
+    ])
+
+
+# ─── Admin Resellers Panel ────────────────────────────────────────────────────
+
+def admin_resellers_kb(resellers: list) -> InlineKeyboardMarkup:
+    rows = []
+    for r in resellers:
+        status = "🟢" if r.get('is_active') else "🔴"
+        rows.append([InlineKeyboardButton(
+            f"{status} {r.get('full_name') or r.get('username') or r['user_id']}  |  {r['credit']:,} تومان",
+            callback_data=f"adm_res_{r['user_id']}"
+        )])
+    rows.append([InlineKeyboardButton("➕ ریسلر جدید",  callback_data="adm_res_add")])
+    rows.append([InlineKeyboardButton("❌ بستن",          callback_data="adm_res_close")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_reseller_detail_kb(user_id: int, is_active: bool) -> InlineKeyboardMarkup:
+    toggle_label = "🔴 غیرفعال کن" if is_active else "🟢 فعال کن"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 افزایش اعتبار",    callback_data=f"adm_res_credit_{user_id}")],
+        [InlineKeyboardButton("📊 گزارش فروش",       callback_data=f"adm_res_report_{user_id}")],
+        [InlineKeyboardButton(toggle_label,           callback_data=f"adm_res_toggle_{user_id}")],
+        [InlineKeyboardButton("🗑 حذف ریسلر",        callback_data=f"adm_res_del_{user_id}")],
+        [InlineKeyboardButton("🔙 بازگشت",           callback_data="adm_res_back")],
+    ])
+
+
+# ─── Admin Flash Sale Panel ───────────────────────────────────────────────────
+
+def admin_flash_kb(sales: list) -> InlineKeyboardMarkup:
+    rows = []
+    for s in sales:
+        status = "🟢" if s.get('is_active') else ("⏳" if not s.get('notified') else "✅")
+        rows.append([InlineKeyboardButton(
+            f"{status} {s['name']} — {s['discount_pct']}٪",
+            callback_data=f"adm_flash_{s['id']}"
+        )])
+    rows.append([InlineKeyboardButton("➕ فلش سیل جدید", callback_data="adm_flash_add")])
+    rows.append([InlineKeyboardButton("❌ بستن",           callback_data="adm_flash_close")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_flash_detail_kb(sale_id: int, is_active: bool) -> InlineKeyboardMarkup:
+    toggle = "🔴 پایان دادن" if is_active else "🟢 فعال کردن دستی"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(toggle,                    callback_data=f"adm_flash_toggle_{sale_id}")],
+        [InlineKeyboardButton("📢 برودکست دستی",         callback_data=f"adm_flash_broadcast_{sale_id}")],
+        [InlineKeyboardButton("🗑 حذف",                  callback_data=f"adm_flash_del_{sale_id}")],
+        [InlineKeyboardButton("🔙 بازگشت",               callback_data="adm_flash_back")],
+    ])
+
+
+# ─── Admin Lottery Panel ──────────────────────────────────────────────────────
+
+def admin_lottery_kb(lotteries: list) -> InlineKeyboardMarkup:
+    rows = []
+    for lt in lotteries:
+        status = "🟢" if lt.get('is_active') else "✅"
+        rows.append([InlineKeyboardButton(
+            f"{status} {lt['name']}",
+            callback_data=f"adm_lot_{lt['id']}"
+        )])
+    rows.append([InlineKeyboardButton("➕ قرعه‌کشی جدید", callback_data="adm_lot_add")])
+    rows.append([InlineKeyboardButton("❌ بستن",            callback_data="adm_lot_close")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_lottery_detail_kb(lot_id: int, is_active: bool) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 لیست شرکت‌کنندگان", callback_data=f"adm_lot_entries_{lot_id}")],
+        [InlineKeyboardButton("🎰 قرعه‌کشی دستی",    callback_data=f"adm_lot_draw_{lot_id}")],
+        [InlineKeyboardButton("🗑 لغو و بستن",         callback_data=f"adm_lot_cancel_{lot_id}")],
+        [InlineKeyboardButton("🔙 بازگشت",             callback_data="adm_lot_back")],
+    ])
+
+
+# ─── Admin Logs Panel ─────────────────────────────────────────────────────────
+
+def admin_logs_kb(page: int, has_next: bool) -> InlineKeyboardMarkup:
+    row = []
+    if page > 0:
+        row.append(InlineKeyboardButton("◀️ قبلی", callback_data=f"adm_log_page_{page-1}"))
+    if has_next:
+        row.append(InlineKeyboardButton("بعدی ▶️", callback_data=f"adm_log_page_{page+1}"))
+    rows = [row] if row else []
+    rows.append([InlineKeyboardButton("❌ بستن", callback_data="adm_log_close")])
+    return InlineKeyboardMarkup(rows)
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _load_bar(pct: int) -> str:
+    filled = round(pct / 10)
+    return "█" * filled + "░" * (10 - filled)

@@ -1,8 +1,9 @@
-"""ربات ادمین v2 — پنل فوق پیشرفته، تنظیمات پویا، جوین اجباری، HTML parse mode."""
+"""ربات ادمین v3 — سرور، ریسلر، فلش سیل، قرعه‌کشی، امتیاز، لاگ."""
 import logging
 import re
 import signal
 import os
+from datetime import datetime, timedelta
 from io import BytesIO
 from telegram import Update, Bot
 from telegram.ext import (
@@ -19,64 +20,98 @@ from database import (
     approve_wallet_charge, reject_wallet_charge, get_pending_wallet_charges,
     admin_adjust_wallet, search_orders, export_orders_csv,
     get_referral_stats, get_user_referrals,
+    get_servers, get_server, add_server, toggle_server, set_default_server,
+    delete_server, update_server,
+    get_resellers, get_reseller, add_reseller, remove_reseller, update_reseller,
+    get_flash_sales, create_flash_sale, activate_flash_sale, deactivate_flash_sale,
+    get_active_flash_sale, delete_flash_sale,
+    create_lottery, get_active_lottery, get_lottery_entries, close_lottery, draw_lottery,
+    get_admin_logs, log_admin, get_daily_revenue,
+    add_loyalty_points,
 )
 from keyboards import (
     admin_main_kb, admin_cancel_kb, admin_order_kb,
     admin_wallet_kb, admin_templates_kb,
     admin_settings_kb, admin_settings_pricing_kb, admin_settings_payment_kb,
     admin_settings_referral_kb, admin_settings_trial_kb,
-    admin_settings_wallet_kb, admin_settings_security_kb,
+    admin_settings_wallet_kb, admin_settings_security_kb, admin_settings_points_kb,
     admin_fj_kb, admin_referral_panel_kb,
+    admin_servers_kb, admin_server_detail_kb,
+    admin_resellers_kb, admin_reseller_detail_kb,
+    admin_flash_kb, admin_flash_detail_kb,
+    admin_lottery_kb, admin_lottery_detail_kb,
+    admin_logs_kb,
 )
 from utils import fmt, fmt_gb, fmt_dt, get_vip, STATUS_EMOJI, STATUS_LABEL, STAR_MAP, h
 
 logger = logging.getLogger(__name__)
 
 # ─── State keys ───────────────────────────────────────────────────────────────
-ST          = "adm_st"
-PENDING_OID = "adm_oid"
-PENDING_CFG = "adm_cfg"
+ST           = "adm_st"
+PENDING_OID  = "adm_oid"
+PENDING_CFG  = "adm_cfg"
 
-S_IDLE           = "idle"
-S_WAIT_CFG       = "wait_cfg"
-S_WAIT_SUB       = "wait_sub"
-S_WAIT_EXPIRY    = "wait_expiry"
-S_WAIT_REJECT    = "wait_reject"
-S_WAIT_BROADCAST = "wait_broadcast"
-S_WAIT_DISCOUNT  = "wait_discount"
-S_WAIT_TPL_NAME  = "wait_tpl_name"
-S_WAIT_TPL_CFG   = "wait_tpl_cfg"
-S_WAIT_TPL_SUB   = "wait_tpl_sub"
-S_WAIT_SEARCH    = "wait_search"
-S_WAIT_NOTE      = "wait_note"
-S_WAIT_WALLET_ADJ= "wait_wallet_adj"
-S_WAIT_SETTING   = "wait_setting_val"   # تنظیمات پویا
-S_WAIT_FJ_CHANNEL= "wait_fj_channel"    # افزودن کانال جوین اجباری
-S_WAIT_PKG       = "wait_packages"      # ویرایش بسته‌های GB
+S_IDLE            = "idle"
+S_WAIT_CFG        = "wait_cfg"
+S_WAIT_SUB        = "wait_sub"
+S_WAIT_EXPIRY     = "wait_expiry"
+S_WAIT_REJECT     = "wait_reject"
+S_WAIT_BROADCAST  = "wait_broadcast"
+S_WAIT_DISCOUNT   = "wait_discount"
+S_WAIT_TPL_NAME   = "wait_tpl_name"
+S_WAIT_TPL_CFG    = "wait_tpl_cfg"
+S_WAIT_TPL_SUB    = "wait_tpl_sub"
+S_WAIT_SEARCH     = "wait_search"
+S_WAIT_NOTE       = "wait_note"
+S_WAIT_WALLET_ADJ = "wait_wallet_adj"
+S_WAIT_SETTING    = "wait_setting_val"
+S_WAIT_FJ_CHANNEL = "wait_fj_channel"
+S_WAIT_PKG        = "wait_packages"
+# Servers
+S_WAIT_SRV_NAME   = "wait_srv_name"
+S_WAIT_SRV_LOC    = "wait_srv_loc"
+S_WAIT_SRV_LOAD   = "wait_srv_load"
+# Resellers
+S_WAIT_RES_USER   = "wait_res_user"
+S_WAIT_RES_CREDIT = "wait_res_credit"
+S_WAIT_RES_PCT    = "wait_res_pct"
+# Flash sales
+S_WAIT_FLASH_NAME = "wait_flash_name"
+S_WAIT_FLASH_PCT  = "wait_flash_pct"
+S_WAIT_FLASH_ENDS = "wait_flash_ends"
+# Lottery
+S_WAIT_LOT_NAME   = "wait_lot_name"
+S_WAIT_LOT_GB     = "wait_lot_gb"
+S_WAIT_LOT_TOMAN  = "wait_lot_toman"
+S_WAIT_LOT_DRAW   = "wait_lot_draw"
 
 # ─── Settings Registry ────────────────────────────────────────────────────────
-# key → (label, type, min_val, max_val)
 SETTINGS_REGISTRY = {
-    "price_per_gb":            ("💰 قیمت هر گیگابایت (تومان)",   "int",   1000,   500_000),
-    "min_gb":                  ("📉 حداقل گیگابایت",              "int",   1,      500),
-    "max_gb":                  ("📈 حداکثر گیگابایت",             "int",   10,     2000),
-    "card_number":             ("💳 شماره کارت",                  "str",   None,   None),
-    "card_holder":             ("👤 نام صاحب کارت",               "str",   None,   None),
-    "bank_name":               ("🏦 نام بانک",                    "str",   None,   None),
-    "support_username":        ("💬 یوزرنیم پشتیبانی",            "str",   None,   None),
-    "bot_channel":             ("📢 آیدی کانال",                  "str",   None,   None),
-    "wallet_min_charge":       ("💵 حداقل شارژ کیف پول (تومان)", "int",   10_000, 1_000_000),
-    "referral_bonus_mb":       ("📡 جایزه معرفی (مگابایت)",       "int",   0,      50_000),
-    "referral_bonus_toman":    ("💵 جایزه معرفی (تومان)",         "int",   0,      1_000_000),
-    "referral_min_purchases":  ("🛒 حداقل خرید برای جایزه",       "int",   1,      10),
-    "free_trial_gb":           ("🎯 گیگ آزمایش رایگان",           "int",   1,      100),
-    "rate_limit_per_minute":   ("⚡ حداکثر پیام در دقیقه",        "int",   5,      60),
+    "price_per_gb":           ("💰 قیمت هر گیگابایت (تومان)",   "int", 1000,   500_000),
+    "min_gb":                 ("📉 حداقل گیگابایت",              "int", 1,      500),
+    "max_gb":                 ("📈 حداکثر گیگابایت",             "int", 10,     2000),
+    "card_number":            ("💳 شماره کارت",                  "str", None,   None),
+    "card_holder":            ("👤 نام صاحب کارت",               "str", None,   None),
+    "bank_name":              ("🏦 نام بانک",                    "str", None,   None),
+    "support_username":       ("💬 یوزرنیم پشتیبانی",            "str", None,   None),
+    "bot_channel":            ("📢 آیدی کانال",                  "str", None,   None),
+    "wallet_min_charge":      ("💵 حداقل شارژ کیف پول (تومان)", "int", 10_000, 1_000_000),
+    "referral_bonus_mb":      ("📡 جایزه معرفی (مگابایت)",       "int", 0,      50_000),
+    "referral_bonus_toman":   ("💵 جایزه معرفی (تومان)",         "int", 0,      1_000_000),
+    "referral_min_purchases": ("🛒 حداقل خرید برای جایزه",       "int", 1,      10),
+    "free_trial_gb":          ("🎯 گیگ آزمایش رایگان",           "int", 1,      100),
+    "rate_limit_per_minute":  ("⚡ حداکثر پیام در دقیقه",        "int", 5,      60),
+    "points_per_10k":         ("⭐ امتیاز به ازای ۱۰ هزار تومان","int", 1,      100),
+    "points_to_toman":        ("💸 ارزش هر امتیاز (تومان)",      "int", 10,     10_000),
+    "payment_timeout_min":    ("⏱ مهلت پرداخت (دقیقه)",         "int", 5,      60),
 }
 
 TOGGLE_SETTINGS = {
     "free_trial_enabled": "🎯 آزمایش رایگان",
     "captcha_enabled":    "🛡 کپچا",
     "force_join_enabled": "📢 جوین اجباری",
+    "daily_report_enabled": "📊 گزارش روزانه",
+    "multi_card_enabled": "💳 چند کارت",
 }
 
 
@@ -103,7 +138,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👑 <b>پنل ادمین — {h(BOT_NAME)}</b>\n\n"
         f"⏳ سفارش در انتظار: <b>{s['pending_orders']}</b>\n"
         f"💬 تیکت باز: <b>{s['open_tickets']}</b>\n"
-        f"👥 کاربران: <b>{s['total_users']:,}</b>\n\n"
+        f"👥 کاربران: <b>{s['total_users']:,}</b>\n"
+        f"🌐 سرورهای فعال: <b>{s['active_servers']}</b>\n"
+        f"👨‍💼 ریسلرها: <b>{s['total_resellers']}</b>\n\n"
         "سفارشات جدید به‌صورت خودکار اطلاع‌رسانی می‌شوند.",
         parse_mode="HTML",
         reply_markup=admin_main_kb()
@@ -113,9 +150,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_only
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data[ST] = S_IDLE
-    context.user_data.pop(PENDING_OID, None)
-    context.user_data.pop(PENDING_CFG, None)
-    context.user_data.pop("setting_key", None)
+    for k in (PENDING_OID, PENDING_CFG, "setting_key", "srv_name", "srv_loc",
+              "res_uid", "res_name", "flash_name", "flash_pct", "lot_name",
+              "lot_gb", "lot_toman", "tpl_name", "tpl_config"):
+        context.user_data.pop(k, None)
     await update.message.reply_text("❌ لغو شد.", reply_markup=admin_main_kb())
 
 
@@ -126,14 +164,14 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    admin_id = query.from_user.id
 
-    # ── لغو ──
     if data == "adm_cancel":
         context.user_data[ST] = S_IDLE
         await query.message.reply_text("❌ لغو شد.", reply_markup=admin_main_kb())
         return
 
-    # ── Settings panel ──
+    # ── Settings ──
     if data == "cfg_back":
         await query.edit_message_text(
             "⚙️ <b>تنظیمات ربات</b>\n\nیک دسته را انتخاب کنید:",
@@ -141,61 +179,45 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if data == "cfg_close" or data == "fj_close" or data == "ref_close":
-        try:
-            await query.delete_message()
-        except Exception:
-            await query.edit_message_text("بسته شد.")
+    if data in ("cfg_close", "fj_close", "ref_close", "adm_srv_close",
+                "adm_res_close", "adm_flash_close", "adm_lot_close", "adm_log_close"):
+        try: await query.delete_message()
+        except Exception: await query.edit_message_text("بسته شد.")
         return
 
     if data == "cfg_menu_pricing":
-        await query.edit_message_text(
-            "💰 <b>قیمت‌گذاری</b>",
-            parse_mode="HTML",
-            reply_markup=admin_settings_pricing_kb(sm.price_per_gb(), sm.min_gb(), sm.max_gb())
-        )
+        await query.edit_message_text("💰 <b>قیمت‌گذاری</b>", parse_mode="HTML",
+            reply_markup=admin_settings_pricing_kb(sm.price_per_gb(), sm.min_gb(), sm.max_gb()))
         return
 
     if data == "cfg_menu_payment":
-        await query.edit_message_text(
-            "💳 <b>اطلاعات پرداخت</b>",
-            parse_mode="HTML",
-            reply_markup=admin_settings_payment_kb(sm.card_number(), sm.card_holder(), sm.bank_name())
-        )
+        await query.edit_message_text("💳 <b>اطلاعات پرداخت</b>", parse_mode="HTML",
+            reply_markup=admin_settings_payment_kb(sm.card_number(), sm.card_holder(), sm.bank_name()))
         return
 
     if data == "cfg_menu_referral":
-        await query.edit_message_text(
-            "🎁 <b>سیستم معرفی</b>",
-            parse_mode="HTML",
-            reply_markup=admin_settings_referral_kb(
-                sm.referral_bonus_mb(), sm.referral_bonus_toman(), sm.referral_min_purchases()
-            )
-        )
+        await query.edit_message_text("🎁 <b>سیستم معرفی</b>", parse_mode="HTML",
+            reply_markup=admin_settings_referral_kb(sm.referral_bonus_mb(), sm.referral_bonus_toman(), sm.referral_min_purchases()))
         return
 
     if data == "cfg_menu_trial":
-        await query.edit_message_text(
-            "🎯 <b>آزمایش رایگان</b>",
-            parse_mode="HTML",
-            reply_markup=admin_settings_trial_kb(sm.free_trial_enabled(), sm.free_trial_gb())
-        )
+        await query.edit_message_text("🎯 <b>آزمایش رایگان</b>", parse_mode="HTML",
+            reply_markup=admin_settings_trial_kb(sm.free_trial_enabled(), sm.free_trial_gb()))
         return
 
     if data == "cfg_menu_wallet":
-        await query.edit_message_text(
-            "💼 <b>کیف پول</b>",
-            parse_mode="HTML",
-            reply_markup=admin_settings_wallet_kb(sm.wallet_min_charge())
-        )
+        await query.edit_message_text("💼 <b>کیف پول</b>", parse_mode="HTML",
+            reply_markup=admin_settings_wallet_kb(sm.wallet_min_charge()))
         return
 
     if data == "cfg_menu_security":
-        await query.edit_message_text(
-            "🛡 <b>کپچا و امنیت</b>",
-            parse_mode="HTML",
-            reply_markup=admin_settings_security_kb(sm.captcha_enabled(), sm.rate_limit_per_minute())
-        )
+        await query.edit_message_text("🛡 <b>کپچا و امنیت</b>", parse_mode="HTML",
+            reply_markup=admin_settings_security_kb(sm.captcha_enabled(), sm.rate_limit_per_minute()))
+        return
+
+    if data == "cfg_menu_points":
+        await query.edit_message_text("⭐ <b>سیستم امتیاز</b>", parse_mode="HTML",
+            reply_markup=admin_settings_points_kb(sm.points_per_10k(), sm.points_to_toman()))
         return
 
     if data == "cfg_menu_packages":
@@ -203,52 +225,37 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"📋 <b>بسته‌های GB فعلی:</b>\n\n{', '.join(str(g) for g in pkgs)} گیگ\n\n"
             "بسته‌های جدید را با کاما وارد کنید:\nمثال: <code>20,50,100,200</code>",
-            parse_mode="HTML",
-            reply_markup=admin_cancel_kb()
+            parse_mode="HTML", reply_markup=admin_cancel_kb()
         )
         context.user_data[ST] = S_WAIT_PKG
         return
 
-    # toggle settings
     if data.startswith("cfg_toggle_"):
         key = data[len("cfg_toggle_"):]
-        current = sm.get(key, False)
+        current = sm._bool(key)
         sm.set_val(key, not current)
         label = TOGGLE_SETTINGS.get(key, key)
         status = "✅ فعال" if not current else "❌ غیرفعال"
         await query.answer(f"{label}: {status}", show_alert=True)
-        # refresh the relevant menu
-        if key in ("free_trial_enabled",):
-            await query.edit_message_text(
-                "🎯 <b>آزمایش رایگان</b>",
-                parse_mode="HTML",
-                reply_markup=admin_settings_trial_kb(sm.free_trial_enabled(), sm.free_trial_gb())
-            )
+        if key == "free_trial_enabled":
+            await query.edit_message_text("🎯 <b>آزمایش رایگان</b>", parse_mode="HTML",
+                reply_markup=admin_settings_trial_kb(sm.free_trial_enabled(), sm.free_trial_gb()))
         elif key in ("captcha_enabled", "rate_limit_per_minute"):
-            await query.edit_message_text(
-                "🛡 <b>کپچا و امنیت</b>",
-                parse_mode="HTML",
-                reply_markup=admin_settings_security_kb(sm.captcha_enabled(), sm.rate_limit_per_minute())
-            )
+            await query.edit_message_text("🛡 <b>کپچا و امنیت</b>", parse_mode="HTML",
+                reply_markup=admin_settings_security_kb(sm.captcha_enabled(), sm.rate_limit_per_minute()))
         elif key == "force_join_enabled":
-            await query.edit_message_text(
-                "📢 <b>جوین اجباری</b>",
-                parse_mode="HTML",
-                reply_markup=admin_fj_kb(sm.force_join_enabled(), sm.force_join_channels())
-            )
+            await query.edit_message_text("📢 <b>جوین اجباری</b>", parse_mode="HTML",
+                reply_markup=admin_fj_kb(sm.force_join_enabled(), sm.force_join_channels()))
         return
 
-    # numeric/string setting input
     if data.startswith("cfg_set_"):
         key = data[len("cfg_set_"):]
-        if key not in SETTINGS_REGISTRY:
-            return
+        if key not in SETTINGS_REGISTRY: return
         label, stype, mn, mx = SETTINGS_REGISTRY[key]
         hint = f"(عدد بین {mn:,} تا {mx:,})" if stype == "int" and mn is not None else ""
         await query.message.reply_text(
             f"✏️ مقدار جدید برای <b>{h(label)}</b>:\n{hint}\n\n/cancel برای لغو",
-            parse_mode="HTML",
-            reply_markup=admin_cancel_kb()
+            parse_mode="HTML", reply_markup=admin_cancel_kb()
         )
         context.user_data["setting_key"] = key
         context.user_data[ST] = S_WAIT_SETTING
@@ -257,16 +264,13 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Force Join ──
     if data == "fj_toggle":
         sm.set_val("force_join_enabled", not sm.force_join_enabled())
-        await query.edit_message_text(
-            "📢 <b>جوین اجباری</b>",
-            parse_mode="HTML",
-            reply_markup=admin_fj_kb(sm.force_join_enabled(), sm.force_join_channels())
-        )
+        await query.edit_message_text("📢 <b>جوین اجباری</b>", parse_mode="HTML",
+            reply_markup=admin_fj_kb(sm.force_join_enabled(), sm.force_join_channels()))
         return
 
     if data == "fj_add":
         await query.message.reply_text(
-            "➕ آیدی کانال را وارد کنید (مثال: <code>@my_channel</code>):\n/cancel برای لغو",
+            "➕ آیدی کانال را وارد کنید (مثال: <code>@my_channel</code>):\n/cancel",
             parse_mode="HTML", reply_markup=admin_cancel_kb()
         )
         context.user_data[ST] = S_WAIT_FJ_CHANNEL
@@ -276,17 +280,13 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         idx = int(data.split("_")[2])
         channels = sm.force_join_channels()
         if 0 <= idx < len(channels):
-            removed = channels.pop(idx)
+            channels.pop(idx)
             sm.set_val("force_join_channels", channels)
-            await query.answer(f"حذف شد: {removed}", show_alert=True)
-        await query.edit_message_text(
-            "📢 <b>جوین اجباری</b>",
-            parse_mode="HTML",
-            reply_markup=admin_fj_kb(sm.force_join_enabled(), sm.force_join_channels())
-        )
+        await query.edit_message_text("📢 <b>جوین اجباری</b>", parse_mode="HTML",
+            reply_markup=admin_fj_kb(sm.force_join_enabled(), sm.force_join_channels()))
         return
 
-    # ── Referral Panel ──
+    # ── Referral ──
     if data == "ref_leaderboard":
         rows = get_referral_stats()
         if not rows:
@@ -295,22 +295,16 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "🏆 <b>لیدربورد زیرمجموعه</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
         for i, r in enumerate(rows, 1):
             uname = f"@{r['username']}" if r.get("username") else "—"
-            text += (
-                f"{i}. {h(r['full_name'])} ({h(uname)})\n"
-                f"   👥 {r['total_refs']} نفر | ✅ جایزه دریافت: {r['paid_refs']}\n\n"
-            )
+            text += f"{i}. {h(r['full_name'])} ({h(uname)})\n   👥 {r['total_refs']} نفر | ✅ {r['paid_refs']}\n\n"
         await query.message.reply_text(text, parse_mode="HTML")
         return
 
     if data == "ref_stats":
         rows = get_referral_stats()
-        total_refs = sum(r["total_refs"] for r in rows)
-        paid_refs  = sum(r["paid_refs"] for r in rows)
         await query.message.reply_text(
-            f"📊 <b>آمار کلی معرفی‌ها</b>\n\n"
-            f"👥 کل زیرمجموعه: <b>{total_refs}</b>\n"
-            f"✅ جایزه پرداخت شده: <b>{paid_refs}</b>\n"
-            f"👑 تعداد معرف فعال: <b>{len(rows)}</b>",
+            f"📊 <b>آمار معرفی‌ها</b>\n\n"
+            f"👥 کل: <b>{sum(r['total_refs'] for r in rows)}</b>\n"
+            f"✅ با خرید: <b>{sum(r['paid_refs'] for r in rows)}</b>",
             parse_mode="HTML"
         )
         return
@@ -331,8 +325,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if PANEL_ENABLED:
             await query.message.reply_text(
-                f"✅ سفارش <b>#{order_id}</b> در حال تایید\n\n"
-                f"تعداد روز انقضا (پیش‌فرض: {PANEL_DEFAULT_DAYS}):\n"
+                f"✅ سفارش <b>#{order_id}</b>\n\nتعداد روز انقضا (پیش‌فرض: {PANEL_DEFAULT_DAYS}):\n"
                 "(یا <code>-</code> برای پیش‌فرض)\n/cancel",
                 parse_mode="HTML", reply_markup=admin_cancel_kb()
             )
@@ -341,8 +334,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if templates:
                 await query.message.reply_text(
                     f"✅ سفارش <b>#{order_id}</b> — قالب کانفیگ را انتخاب کنید:",
-                    parse_mode="HTML",
-                    reply_markup=admin_templates_kb(templates)
+                    parse_mode="HTML", reply_markup=admin_templates_kb(templates)
                 )
             else:
                 context.user_data[ST] = S_WAIT_CFG
@@ -350,9 +342,9 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"✅ سفارش <b>#{order_id}</b>\n\n📤 کانفیگ VLESS را ارسال کنید:\n/cancel",
                     parse_mode="HTML", reply_markup=admin_cancel_kb()
                 )
+        log_admin(admin_id, "approve_attempt", f"order#{order_id}")
         return
 
-    # ── Template selection ──
     if data.startswith("adm_tpl_"):
         order_id = context.user_data.get(PENDING_OID)
         if not order_id:
@@ -360,9 +352,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if data == "adm_tpl_manual":
             context.user_data[ST] = S_WAIT_CFG
-            await query.edit_message_text(
-                "📤 کانفیگ VLESS را ارسال کنید:", reply_markup=admin_cancel_kb()
-            )
+            await query.edit_message_text("📤 کانفیگ VLESS را ارسال کنید:", reply_markup=admin_cancel_kb())
             return
         tpl_id = int(data.split("_")[2])
         tpl = get_template(tpl_id)
@@ -375,17 +365,16 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         customer_bot = context.bot_data.get("customer_bot_instance")
         if customer_bot and order:
             from customer_bot import deliver_config
-            order["config"]   = tpl["config"]
+            order["config"] = tpl["config"]
             order["sub_link"] = tpl.get("sub_link", "")
             await deliver_config(customer_bot, order, tpl["config"], tpl.get("sub_link", ""))
         await query.edit_message_text(
-            f"✅ سفارش <b>#{order_id}</b> تایید شد (قالب: {h(tpl['name'])}).",
-            parse_mode="HTML"
+            f"✅ سفارش <b>#{order_id}</b> تایید شد (قالب: {h(tpl['name'])}).", parse_mode="HTML"
         )
+        log_admin(admin_id, "approved", f"order#{order_id} tpl={tpl_id}")
         context.user_data[ST] = S_IDLE
         return
 
-    # ── Order reject ──
     if data.startswith("adm_reject_"):
         order_id = int(data.split("_")[2])
         order = get_order(order_id)
@@ -396,23 +385,18 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[PENDING_OID] = order_id
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text(
-            f"❌ دلیل رد سفارش <b>#{order_id}</b> را بنویسید:\n"
-            "(یا <code>-</code> بدون دلیل)\n/cancel",
+            f"❌ دلیل رد سفارش <b>#{order_id}</b> را بنویسید:\n(یا <code>-</code>)\n/cancel",
             parse_mode="HTML", reply_markup=admin_cancel_kb()
         )
         return
 
-    # ── Order note ──
     if data.startswith("adm_note_"):
         order_id = int(data.split("_")[2])
         context.user_data[ST] = S_WAIT_NOTE
         context.user_data[PENDING_OID] = order_id
-        await query.message.reply_text(
-            f"📝 یادداشت برای سفارش #{order_id}:", reply_markup=admin_cancel_kb()
-        )
+        await query.message.reply_text(f"📝 یادداشت برای سفارش #{order_id}:", reply_markup=admin_cancel_kb())
         return
 
-    # ── User profile ──
     if data.startswith("adm_profile_"):
         order_id = int(data.split("_")[2])
         order = get_order(order_id)
@@ -441,6 +425,7 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception:
                 pass
+            log_admin(admin_id, "wallet_approve", f"tx#{tx_id} amount={tx['amount']}")
         return
 
     if data.startswith("adm_wreject_"):
@@ -451,17 +436,358 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if customer_bot:
                 try:
                     await customer_bot.send_message(
-                        tx["user_id"],
-                        f"❌ درخواست شارژ {fmt(tx['amount'])} رد شد."
+                        tx["user_id"], f"❌ درخواست شارژ {fmt(tx['amount'])} رد شد."
                     )
-                except Exception as e:
-                    logger.error("Wallet reject notify: %s", e)
+                except Exception:
+                    pass
             try:
                 await query.edit_message_caption(
                     caption=(query.message.caption or "") + "\n\n❌ رد شد"
                 )
             except Exception:
                 pass
+        return
+
+    # ═══════════════════════════════════════════════════════════════
+    # ── Servers Panel ──
+    # ═══════════════════════════════════════════════════════════════
+
+    if data == "adm_srv_back":
+        servers = get_servers()
+        await query.edit_message_text("🌐 <b>مدیریت سرورها</b>", parse_mode="HTML",
+            reply_markup=admin_servers_kb(servers))
+        return
+
+    if data == "adm_srv_add":
+        await query.message.reply_text(
+            "➕ <b>سرور جدید</b>\n\nنام سرور را وارد کنید:\n/cancel",
+            parse_mode="HTML", reply_markup=admin_cancel_kb()
+        )
+        context.user_data[ST] = S_WAIT_SRV_NAME
+        return
+
+    if data.startswith("adm_srv_toggle_"):
+        sid = int(data.split("_")[3])
+        new_state = toggle_server(sid)
+        label = "🟢 فعال شد" if new_state else "🔴 غیرفعال شد"
+        await query.answer(label, show_alert=True)
+        srv = get_server(sid)
+        if srv:
+            await query.edit_message_text(
+                f"🌐 <b>{h(srv['name'])}</b>",
+                parse_mode="HTML",
+                reply_markup=admin_server_detail_kb(sid, srv["is_active"], srv["is_default"])
+            )
+        log_admin(admin_id, "server_toggle", f"srv#{sid} → {label}")
+        return
+
+    if data.startswith("adm_srv_default_"):
+        sid = int(data.split("_")[3])
+        set_default_server(sid)
+        await query.answer("★ سرور پیش‌فرض تنظیم شد", show_alert=True)
+        srv = get_server(sid)
+        if srv:
+            await query.edit_message_text(
+                f"🌐 <b>{h(srv['name'])}</b>",
+                parse_mode="HTML",
+                reply_markup=admin_server_detail_kb(sid, srv["is_active"], True)
+            )
+        return
+
+    if data.startswith("adm_srv_load_"):
+        sid = int(data.split("_")[3])
+        await query.message.reply_text(
+            f"📊 درصد لود سرور #{sid} را وارد کنید (0-100):\n/cancel",
+            reply_markup=admin_cancel_kb()
+        )
+        context.user_data["edit_srv_id"] = sid
+        context.user_data[ST] = S_WAIT_SRV_LOAD
+        return
+
+    if data.startswith("adm_srv_rename_"):
+        sid = int(data.split("_")[3])
+        context.user_data["edit_srv_id"] = sid
+        context.user_data[ST] = S_WAIT_SRV_NAME
+        await query.message.reply_text("✏️ نام جدید سرور را وارد کنید:\n/cancel", reply_markup=admin_cancel_kb())
+        return
+
+    if data.startswith("adm_srv_del_"):
+        sid = int(data.split("_")[3])
+        delete_server(sid)
+        await query.answer("🗑 سرور حذف شد", show_alert=True)
+        await query.edit_message_text("🌐 <b>مدیریت سرورها</b>", parse_mode="HTML",
+            reply_markup=admin_servers_kb(get_servers()))
+        log_admin(admin_id, "server_delete", f"srv#{sid}")
+        return
+
+    if data.startswith("adm_srv_"):
+        sid = int(data.split("_")[2])
+        srv = get_server(sid)
+        if srv:
+            load = srv.get("load_pct", 0)
+            await query.edit_message_text(
+                f"🌐 <b>{h(srv['name'])}</b>\n\n"
+                f"📍 موقعیت: {h(srv['location'])}\n"
+                f"📊 لود: {load}٪\n"
+                f"👥 کاربر: {srv['current_users']}/{srv['max_users']}\n"
+                f"وضعیت: {'🟢 فعال' if srv['is_active'] else '🔴 غیرفعال'}",
+                parse_mode="HTML",
+                reply_markup=admin_server_detail_kb(sid, srv["is_active"], srv["is_default"])
+            )
+        return
+
+    # ═══════════════════════════════════════════════════════════════
+    # ── Resellers Panel ──
+    # ═══════════════════════════════════════════════════════════════
+
+    if data == "adm_res_back":
+        await query.edit_message_text("👨‍💼 <b>مدیریت ریسلرها</b>", parse_mode="HTML",
+            reply_markup=admin_resellers_kb(get_resellers()))
+        return
+
+    if data == "adm_res_add":
+        await query.message.reply_text(
+            "➕ <b>ریسلر جدید</b>\n\nآیدی تلگرام ریسلر را وارد کنید:\n/cancel",
+            parse_mode="HTML", reply_markup=admin_cancel_kb()
+        )
+        context.user_data[ST] = S_WAIT_RES_USER
+        return
+
+    if data.startswith("adm_res_toggle_"):
+        uid = int(data.split("_")[3])
+        res = get_reseller(uid, active_only=False)
+        if res:
+            update_reseller(uid, is_active=1 - res["is_active"])
+            await query.answer("وضعیت ریسلر تغییر کرد", show_alert=True)
+        res = get_reseller(uid, active_only=False) or {}
+        await query.edit_message_text(
+            f"👨‍💼 <b>{h(res.get('full_name','—'))}</b>",
+            parse_mode="HTML",
+            reply_markup=admin_reseller_detail_kb(uid, bool(res.get("is_active")))
+        )
+        return
+
+    if data.startswith("adm_res_credit_"):
+        uid = int(data.split("_")[3])
+        context.user_data["res_uid"] = uid
+        context.user_data[ST] = S_WAIT_RES_CREDIT
+        await query.message.reply_text(
+            f"💰 مبلغ شارژ (تومان) برای ریسلر {uid}:\n/cancel", reply_markup=admin_cancel_kb()
+        )
+        return
+
+    if data.startswith("adm_res_del_"):
+        uid = int(data.split("_")[3])
+        remove_reseller(uid)
+        await query.answer("🗑 ریسلر حذف شد", show_alert=True)
+        await query.edit_message_text("👨‍💼 <b>مدیریت ریسلرها</b>", parse_mode="HTML",
+            reply_markup=admin_resellers_kb(get_resellers()))
+        log_admin(admin_id, "reseller_delete", f"uid#{uid}")
+        return
+
+    if data.startswith("adm_res_report_"):
+        uid = int(data.split("_")[3])
+        res = get_reseller(uid, active_only=False)
+        if res:
+            await query.message.reply_text(
+                f"📊 <b>گزارش ریسلر</b>\n\n"
+                f"👤 {h(res.get('full_name','—'))}\n"
+                f"💰 کل فروش: {fmt(res['total_sales'])}\n"
+                f"🎁 کل کمیسیون: {fmt(res['total_commission'])}\n"
+                f"💼 موجودی: {fmt(res['balance'])}\n"
+                f"🔖 کمیسیون: {res['commission_pct']}٪",
+                parse_mode="HTML"
+            )
+        return
+
+    if data.startswith("adm_res_"):
+        uid = int(data.split("_")[2])
+        res = get_reseller(uid, active_only=False)
+        if res:
+            await query.edit_message_text(
+                f"👨‍💼 <b>{h(res.get('full_name','—'))}</b>\n\n"
+                f"🆔 {res['user_id']}\n"
+                f"💰 موجودی: {fmt(res['balance'])}\n"
+                f"🔖 کمیسیون: {res['commission_pct']}٪\n"
+                f"📊 فروش کل: {fmt(res['total_sales'])}",
+                parse_mode="HTML",
+                reply_markup=admin_reseller_detail_kb(uid, bool(res.get("is_active")))
+            )
+        return
+
+    # ═══════════════════════════════════════════════════════════════
+    # ── Flash Sales Panel ──
+    # ═══════════════════════════════════════════════════════════════
+
+    if data == "adm_flash_back":
+        await query.edit_message_text("🔥 <b>فلش سیل‌ها</b>", parse_mode="HTML",
+            reply_markup=admin_flash_kb(get_flash_sales()))
+        return
+
+    if data == "adm_flash_add":
+        await query.message.reply_text(
+            "🔥 <b>فلش سیل جدید</b>\n\nنام فلش سیل را وارد کنید:\n/cancel",
+            parse_mode="HTML", reply_markup=admin_cancel_kb()
+        )
+        context.user_data[ST] = S_WAIT_FLASH_NAME
+        return
+
+    if data.startswith("adm_flash_toggle_"):
+        fid = int(data.split("_")[3])
+        flash = next((s for s in get_flash_sales() if s["id"] == fid), None)
+        if flash:
+            if flash["is_active"]:
+                deactivate_flash_sale(fid)
+                await query.answer("🔴 فلش سیل پایان یافت", show_alert=True)
+                log_admin(admin_id, "flash_deactivate", f"fid#{fid}")
+            else:
+                activate_flash_sale(fid)
+                await query.answer("🟢 فلش سیل فعال شد", show_alert=True)
+                log_admin(admin_id, "flash_activate", f"fid#{fid}")
+        sales = get_flash_sales()
+        f = next((s for s in sales if s["id"] == fid), None)
+        if f:
+            await query.edit_message_text(
+                f"🔥 <b>{h(f['name'])}</b>\n\n{f['discount_pct']}٪ تخفیف",
+                parse_mode="HTML",
+                reply_markup=admin_flash_detail_kb(fid, f["is_active"])
+            )
+        return
+
+    if data.startswith("adm_flash_broadcast_"):
+        fid = int(data.split("_")[3])
+        flash = next((s for s in get_flash_sales() if s["id"] == fid), None)
+        if not flash:
+            return
+        users = get_all_users()
+        customer_bot = context.bot_data.get("customer_bot_instance")
+        sent = 0
+        if customer_bot:
+            from datetime import datetime
+            end_dt = datetime.fromisoformat(flash["ends_at"])
+            hours = max(1, int((end_dt - datetime.now()).total_seconds() // 3600))
+            text = (
+                "🔥 <b>فلش سیل!</b>\n\n"
+                f"🎁 <b>{h(flash['name'])}</b>\n"
+                f"💸 تخفیف: <b>{flash['discount_pct']}٪</b>\n"
+                f"⏰ تا <b>{hours} ساعت</b> دیگر\n\n"
+                "همین الان بخرید! 🛒"
+            )
+            for u in users:
+                try:
+                    await customer_bot.send_message(u["user_id"], text, parse_mode="HTML")
+                    sent += 1
+                except Exception:
+                    pass
+        await query.message.reply_text(f"📢 برودکست فلش سیل: {sent} نفر", reply_markup=admin_main_kb())
+        log_admin(admin_id, "flash_broadcast", f"fid#{fid} sent={sent}")
+        return
+
+    if data.startswith("adm_flash_del_"):
+        fid = int(data.split("_")[3])
+        from database import delete_flash_sale
+        delete_flash_sale(fid)
+        await query.answer("🗑 حذف شد", show_alert=True)
+        await query.edit_message_text("🔥 <b>فلش سیل‌ها</b>", parse_mode="HTML",
+            reply_markup=admin_flash_kb(get_flash_sales()))
+        return
+
+    if data.startswith("adm_flash_"):
+        fid = int(data.split("_")[2])
+        f = next((s for s in get_flash_sales() if s["id"] == fid), None)
+        if f:
+            await query.edit_message_text(
+                f"🔥 <b>{h(f['name'])}</b>\n\n"
+                f"💸 تخفیف: {f['discount_pct']}٪\n"
+                f"📅 شروع: {h(str(f.get('starts_at','—'))[:16])}\n"
+                f"📅 پایان: {h(str(f.get('ends_at','—'))[:16])}\n"
+                f"وضعیت: {'🟢 فعال' if f['is_active'] else '⏸ غیرفعال'}",
+                parse_mode="HTML",
+                reply_markup=admin_flash_detail_kb(fid, f["is_active"])
+            )
+        return
+
+    # ═══════════════════════════════════════════════════════════════
+    # ── Lottery Panel ──
+    # ═══════════════════════════════════════════════════════════════
+
+    if data == "adm_lot_back":
+        from database import get_active_lottery as _gal
+        lotteries = []
+        lt = _gal()
+        if lt: lotteries = [lt]
+        await query.edit_message_text("🎰 <b>قرعه‌کشی</b>", parse_mode="HTML",
+            reply_markup=admin_lottery_kb(lotteries))
+        return
+
+    if data == "adm_lot_add":
+        await query.message.reply_text(
+            "🎰 <b>قرعه‌کشی جدید</b>\n\nنام قرعه‌کشی را وارد کنید:\n/cancel",
+            parse_mode="HTML", reply_markup=admin_cancel_kb()
+        )
+        context.user_data[ST] = S_WAIT_LOT_NAME
+        return
+
+    if data.startswith("adm_lot_entries_"):
+        lot_id = int(data.split("_")[3])
+        entries = get_lottery_entries(lot_id)
+        if not entries:
+            await query.message.reply_text("👥 شرکت‌کننده‌ای ندارد.")
+            return
+        text = f"👥 <b>شرکت‌کنندگان ({len(entries)})</b>\n━━━━━━━━\n\n"
+        for e in entries[:30]:
+            uname = f"@{e['username']}" if e.get("username") else "—"
+            text += f"• {h(e.get('full_name','—'))} ({h(uname)}) | <code>{e['user_id']}</code>\n"
+        await query.message.reply_text(text, parse_mode="HTML")
+        return
+
+    if data.startswith("adm_lot_draw_"):
+        lot_id = int(data.split("_")[3])
+        entries = get_lottery_entries(lot_id)
+        if not entries:
+            await query.answer("شرکت‌کننده‌ای نیست!", show_alert=True)
+            return
+        winner = draw_lottery(lot_id)
+        if winner:
+            wname = winner.get("full_name", "—")
+            wuser = winner.get("username") or "—"
+            await query.message.reply_text(
+                f"🎰 <b>برنده قرعه‌کشی:</b>\n\n"
+                f"🥇 {h(wname)} (@{h(wuser)})\n"
+                f"🆔 <code>{winner['user_id']}</code>",
+                parse_mode="HTML"
+            )
+            log_admin(admin_id, "lottery_draw", f"lot#{lot_id} winner={winner['user_id']}")
+        return
+
+    if data.startswith("adm_lot_cancel_"):
+        lot_id = int(data.split("_")[3])
+        close_lottery(lot_id)
+        await query.answer("قرعه‌کشی لغو شد", show_alert=True)
+        await query.edit_message_text("🎰 <b>قرعه‌کشی</b>", parse_mode="HTML",
+            reply_markup=admin_lottery_kb([]))
+        return
+
+    if data.startswith("adm_lot_"):
+        lot_id = int(data.split("_")[2])
+        lt = get_active_lottery()
+        if lt and lt["id"] == lot_id:
+            entries = get_lottery_entries(lot_id)
+            await query.edit_message_text(
+                f"🎰 <b>{h(lt['name'])}</b>\n\n"
+                f"📅 قرعه‌کشی: {h(str(lt.get('draw_at','—'))[:16])}\n"
+                f"👥 شرکت‌کنندگان: {len(entries)}\n"
+                f"🎁 جایزه GB: {lt.get('prize_gb',0)}\n"
+                f"💰 جایزه تومان: {fmt(lt.get('prize_toman',0))}",
+                parse_mode="HTML",
+                reply_markup=admin_lottery_detail_kb(lot_id, True)
+            )
+        return
+
+    # ── Admin Logs ──
+    if data.startswith("adm_log_page_"):
+        page = int(data.split("_")[3])
+        await _show_logs_page(query.message, page, edit=True, query=query)
         return
 
 
@@ -471,8 +797,8 @@ async def handle_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     state = context.user_data.get(ST, S_IDLE)
+    admin_id = update.effective_user.id
 
-    # ── Dynamic setting value input ──
     if state == S_WAIT_SETTING:
         key = context.user_data.get("setting_key")
         if not key or key not in SETTINGS_REGISTRY:
@@ -496,11 +822,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ <b>{h(label)}</b> بروزرسانی شد:\n<code>{h(str(val))}</code>",
             parse_mode="HTML", reply_markup=admin_main_kb()
         )
+        log_admin(admin_id, "setting_change", f"{key}={val}")
         context.user_data[ST] = S_IDLE
         context.user_data.pop("setting_key", None)
         return
 
-    # ── Force join channel add ──
     if state == S_WAIT_FJ_CHANNEL:
         ch = text.strip()
         if not ch.startswith("@"):
@@ -510,15 +836,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             channels.append(ch)
             sm.set_val("force_join_channels", channels)
         await update.message.reply_text(
-            f"✅ کانال <b>{h(ch)}</b> اضافه شد.\n\n"
-            "📢 <b>جوین اجباری</b>",
+            f"✅ کانال <b>{h(ch)}</b> اضافه شد.\n\n📢 <b>جوین اجباری</b>",
             parse_mode="HTML",
             reply_markup=admin_fj_kb(sm.force_join_enabled(), sm.force_join_channels())
         )
         context.user_data[ST] = S_IDLE
         return
 
-    # ── GB packages edit ──
     if state == S_WAIT_PKG:
         try:
             pkgs = sorted(set(int(x.strip()) for x in text.replace("،", ",").split(",")))
@@ -538,6 +862,210 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[ST] = S_IDLE
         return
 
+    # ── Servers ──
+    if state == S_WAIT_SRV_NAME:
+        edit_id = context.user_data.pop("edit_srv_id", None)
+        if edit_id:
+            update_server(edit_id, name=text.strip())
+            await update.message.reply_text("✅ نام سرور بروزرسانی شد.", reply_markup=admin_main_kb())
+            context.user_data[ST] = S_IDLE
+        else:
+            context.user_data["srv_name"] = text.strip()
+            context.user_data[ST] = S_WAIT_SRV_LOC
+            await update.message.reply_text(
+                "📍 موقعیت جغرافیایی را وارد کنید:\n(مثال: آلمان، فرانسه)\n/cancel",
+                reply_markup=admin_cancel_kb()
+            )
+        return
+
+    if state == S_WAIT_SRV_LOC:
+        context.user_data["srv_loc"] = text.strip()
+        name = context.user_data.get("srv_name", "سرور جدید")
+        loc = text.strip()
+        sid = add_server(name, loc)
+        await update.message.reply_text(
+            f"✅ سرور <b>{h(name)}</b> ({h(loc)}) اضافه شد.\n🆔 #{sid}",
+            parse_mode="HTML", reply_markup=admin_main_kb()
+        )
+        log_admin(admin_id, "server_add", f"srv#{sid} name={name}")
+        context.user_data[ST] = S_IDLE
+        return
+
+    if state == S_WAIT_SRV_LOAD:
+        sid = context.user_data.pop("edit_srv_id", None)
+        try:
+            pct = max(0, min(100, int(text.strip())))
+        except ValueError:
+            await update.message.reply_text("❌ عدد 0-100 وارد کنید.", reply_markup=admin_cancel_kb())
+            return
+        if sid:
+            srv = get_server(sid)
+            if srv:
+                new_users = int(srv.get("max_users", 200) * pct / 100)
+                update_server(sid, current_users=new_users)
+        await update.message.reply_text(f"✅ لود سرور به {pct}٪ تنظیم شد.", reply_markup=admin_main_kb())
+        context.user_data[ST] = S_IDLE
+        return
+
+    # ── Resellers ──
+    if state == S_WAIT_RES_USER:
+        try:
+            uid = int(text.strip())
+        except ValueError:
+            await update.message.reply_text("❌ آیدی معتبر وارد کنید:", reply_markup=admin_cancel_kb())
+            return
+        u = get_user(uid)
+        if not u:
+            await update.message.reply_text("❌ کاربر یافت نشد.", reply_markup=admin_cancel_kb())
+            return
+        context.user_data["res_uid"] = uid
+        context.user_data["res_name"] = u.get("full_name", "—")
+        context.user_data[ST] = S_WAIT_RES_PCT
+        await update.message.reply_text(
+            f"👤 {h(u.get('full_name','—'))}\n\nدرصد کمیسیون (مثال: 10):\n/cancel",
+            parse_mode="HTML", reply_markup=admin_cancel_kb()
+        )
+        return
+
+    if state == S_WAIT_RES_PCT:
+        try:
+            pct = max(0, min(80, int(text.strip())))
+        except ValueError:
+            await update.message.reply_text("❌ عدد وارد کنید:", reply_markup=admin_cancel_kb())
+            return
+        uid = context.user_data.get("res_uid")
+        u = get_user(uid)
+        if u:
+            add_reseller(uid, u.get("username"), u.get("full_name"), pct)
+            await update.message.reply_text(
+                f"✅ ریسلر <b>{h(u.get('full_name','—'))}</b> با {pct}٪ کمیسیون اضافه شد.",
+                parse_mode="HTML", reply_markup=admin_main_kb()
+            )
+            log_admin(admin_id, "reseller_add", f"uid={uid} pct={pct}")
+        context.user_data[ST] = S_IDLE
+        return
+
+    if state == S_WAIT_RES_CREDIT:
+        uid = context.user_data.get("res_uid")
+        try:
+            amount = int(text.strip().replace(",", ""))
+        except ValueError:
+            await update.message.reply_text("❌ عدد وارد کنید:", reply_markup=admin_cancel_kb())
+            return
+        if uid:
+            update_reseller(uid, balance=amount)
+            customer_bot = context.bot_data.get("customer_bot_instance")
+            if customer_bot:
+                try:
+                    await customer_bot.send_message(
+                        uid, f"💰 حساب ریسلر شما <b>{fmt(amount)}</b> شارژ شد.", parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+        await update.message.reply_text(f"✅ اعتبار ریسلر {uid} تنظیم شد: {fmt(amount)}", reply_markup=admin_main_kb())
+        context.user_data[ST] = S_IDLE
+        return
+
+    # ── Flash Sales ──
+    if state == S_WAIT_FLASH_NAME:
+        context.user_data["flash_name"] = text.strip()
+        context.user_data[ST] = S_WAIT_FLASH_PCT
+        await update.message.reply_text("💸 درصد تخفیف (مثال: 30):\n/cancel", reply_markup=admin_cancel_kb())
+        return
+
+    if state == S_WAIT_FLASH_PCT:
+        try:
+            pct = max(1, min(90, int(text.strip())))
+        except ValueError:
+            await update.message.reply_text("❌ عدد وارد کنید:", reply_markup=admin_cancel_kb())
+            return
+        context.user_data["flash_pct"] = pct
+        context.user_data[ST] = S_WAIT_FLASH_ENDS
+        await update.message.reply_text(
+            "⏰ مدت زمان (ساعت):\n(مثال: 6 برای ۶ ساعت)\n/cancel", reply_markup=admin_cancel_kb()
+        )
+        return
+
+    if state == S_WAIT_FLASH_ENDS:
+        try:
+            hours = max(1, int(text.strip()))
+        except ValueError:
+            await update.message.reply_text("❌ عدد وارد کنید:", reply_markup=admin_cancel_kb())
+            return
+        name = context.user_data.get("flash_name", "فلش سیل")
+        pct = context.user_data.get("flash_pct", 10)
+        now = datetime.now()
+        starts_at = now.strftime("%Y-%m-%d %H:%M:%S")
+        ends_at = (now + timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+        fid = create_flash_sale(name, pct, starts_at, ends_at)
+        await update.message.reply_text(
+            f"✅ فلش سیل <b>{h(name)}</b> ساخته شد!\n"
+            f"💸 {pct}٪ تخفیف | ⏰ {hours} ساعت\n\n"
+            "برای فعال‌سازی و برودکست از پنل فلش سیل استفاده کنید.",
+            parse_mode="HTML", reply_markup=admin_main_kb()
+        )
+        log_admin(admin_id, "flash_create", f"fid#{fid} pct={pct} hours={hours}")
+        context.user_data[ST] = S_IDLE
+        return
+
+    # ── Lottery ──
+    if state == S_WAIT_LOT_NAME:
+        context.user_data["lot_name"] = text.strip()
+        context.user_data[ST] = S_WAIT_LOT_GB
+        await update.message.reply_text(
+            "📦 جایزه گیگابایت (0 اگر ندارد):\n/cancel", reply_markup=admin_cancel_kb()
+        )
+        return
+
+    if state == S_WAIT_LOT_GB:
+        try:
+            gb = max(0, int(text.strip()))
+        except ValueError:
+            await update.message.reply_text("❌ عدد وارد کنید:", reply_markup=admin_cancel_kb())
+            return
+        context.user_data["lot_gb"] = gb
+        context.user_data[ST] = S_WAIT_LOT_TOMAN
+        await update.message.reply_text(
+            "💰 جایزه کیف پول (تومان، 0 اگر ندارد):\n/cancel", reply_markup=admin_cancel_kb()
+        )
+        return
+
+    if state == S_WAIT_LOT_TOMAN:
+        try:
+            toman = max(0, int(text.strip().replace(",", "")))
+        except ValueError:
+            await update.message.reply_text("❌ عدد وارد کنید:", reply_markup=admin_cancel_kb())
+            return
+        context.user_data["lot_toman"] = toman
+        context.user_data[ST] = S_WAIT_LOT_DRAW
+        await update.message.reply_text(
+            "📅 ساعت تا قرعه‌کشی (مثال: 24 برای ۲۴ ساعت دیگر):\n/cancel",
+            reply_markup=admin_cancel_kb()
+        )
+        return
+
+    if state == S_WAIT_LOT_DRAW:
+        try:
+            hours = max(1, int(text.strip()))
+        except ValueError:
+            await update.message.reply_text("❌ عدد وارد کنید:", reply_markup=admin_cancel_kb())
+            return
+        name   = context.user_data.get("lot_name", "قرعه‌کشی")
+        gb     = context.user_data.get("lot_gb", 0)
+        toman  = context.user_data.get("lot_toman", 0)
+        draw_at = (datetime.now() + timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+        lid = create_lottery(name, gb, toman, draw_at)
+        await update.message.reply_text(
+            f"✅ قرعه‌کشی <b>{h(name)}</b> ساخته شد!\n"
+            f"🎁 GB: {gb} | 💰 تومان: {fmt(toman)}\n"
+            f"📅 قرعه‌کشی: {hours} ساعت دیگر\n"
+            f"🆔 #{lid}",
+            parse_mode="HTML", reply_markup=admin_main_kb()
+        )
+        log_admin(admin_id, "lottery_create", f"lid#{lid}")
+        context.user_data[ST] = S_IDLE
+        return
+
     # ── Expiry ──
     if state == S_WAIT_EXPIRY:
         days = PANEL_DEFAULT_DAYS
@@ -545,8 +1073,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 days = int(text.strip())
             except ValueError:
-                await update.message.reply_text("عدد وارد کنید یا <code>-</code> برای پیش‌فرض:",
-                                                parse_mode="HTML")
+                await update.message.reply_text("عدد وارد کنید یا <code>-</code>:", parse_mode="HTML")
                 return
         order_id = context.user_data.get(PENDING_OID)
         if PANEL_ENABLED:
@@ -566,10 +1093,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         from customer_bot import deliver_config
                         await deliver_config(customer_bot, order, config, sub_link)
                     await update.message.reply_text(
-                        f"✅ سفارش <b>#{order_id}</b> تایید شد (Marzban).\n"
-                        f"👤 پنل: <code>{h(panel_un)}</code>\n📅 انقضا: {h(expiry)}",
+                        f"✅ سفارش <b>#{order_id}</b> تایید شد.\n👤 <code>{h(panel_un)}</code>\n📅 {h(expiry)}",
                         parse_mode="HTML", reply_markup=admin_main_kb()
                     )
+                    log_admin(admin_id, "approved", f"order#{order_id} panel")
                 except Exception as e:
                     logger.error("Panel create_user: %s", e)
                     await update.message.reply_text(
@@ -581,14 +1108,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             context.user_data["expiry_days"] = days
             context.user_data[ST] = S_WAIT_CFG
-            await update.message.reply_text(
-                "📤 کانفیگ VLESS را ارسال کنید:", reply_markup=admin_cancel_kb()
-            )
+            await update.message.reply_text("📤 کانفیگ VLESS را ارسال کنید:", reply_markup=admin_cancel_kb())
             return
         context.user_data[ST] = S_IDLE
         return
 
-    # ── Config ──
     if state == S_WAIT_CFG:
         context.user_data[PENDING_CFG] = text.strip()
         context.user_data[ST] = S_WAIT_SUB
@@ -598,39 +1122,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ── Sub link ──
     if state == S_WAIT_SUB:
         order_id = context.user_data.get(PENDING_OID)
         config   = context.user_data.get(PENDING_CFG, "")
         sub_link = "" if text.strip() == "-" else text.strip()
-
-        from datetime import datetime, timedelta
-        days = context.user_data.get("expiry_days", 0)
-        expiry = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d") if days else None
-
+        days     = context.user_data.get("expiry_days", 0)
+        expiry   = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d") if days else None
         order = get_order(order_id)
         if not order:
             await update.message.reply_text("❌ سفارش پیدا نشد.")
             context.user_data[ST] = S_IDLE
             return
-
         approve_order(order_id, config, sub_link, expiry)
         customer_bot = context.bot_data.get("customer_bot_instance")
         if customer_bot:
             order.update({"config": config, "sub_link": sub_link, "expiry_date": expiry})
             from customer_bot import deliver_config
             await deliver_config(customer_bot, order, config, sub_link)
-
         await update.message.reply_text(
             f"✅ سفارش <b>#{order_id}</b> تایید شد و کانفیگ ارسال گردید.",
             parse_mode="HTML", reply_markup=admin_main_kb()
         )
+        log_admin(admin_id, "approved", f"order#{order_id} manual")
         context.user_data[ST] = S_IDLE
         context.user_data.pop(PENDING_OID, None)
         context.user_data.pop(PENDING_CFG, None)
         return
 
-    # ── Reject ──
     if state == S_WAIT_REJECT:
         order_id = context.user_data.get(PENDING_OID)
         note = "" if text.strip() == "-" else text.strip()
@@ -652,13 +1170,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error("Reject notify: %s", e)
         await update.message.reply_text(
-            f"❌ سفارش <b>#{order_id}</b> رد شد.",
-            parse_mode="HTML", reply_markup=admin_main_kb()
+            f"❌ سفارش <b>#{order_id}</b> رد شد.", parse_mode="HTML", reply_markup=admin_main_kb()
         )
+        log_admin(admin_id, "rejected", f"order#{order_id} note={note}")
         context.user_data[ST] = S_IDLE
         return
 
-    # ── Note ──
     if state == S_WAIT_NOTE:
         order_id = context.user_data.get(PENDING_OID)
         add_order_note(order_id, text)
@@ -666,7 +1183,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[ST] = S_IDLE
         return
 
-    # ── Broadcast ──
     if state == S_WAIT_BROADCAST:
         users = get_all_users()
         customer_bot = context.bot_data.get("customer_bot_instance")
@@ -682,16 +1198,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📢 پیام ارسال شد.\n✅ موفق: {sent}\n❌ ناموفق: {failed}",
             reply_markup=admin_main_kb()
         )
+        log_admin(admin_id, "broadcast", f"sent={sent}")
         context.user_data[ST] = S_IDLE
         return
 
-    # ── Discount ──
     if state == S_WAIT_DISCOUNT:
         parts = text.strip().split()
         if len(parts) < 2:
-            await update.message.reply_text(
-                "فرمت: <code>CODE PERCENT [MAX_USES]</code>", parse_mode="HTML"
-            )
+            await update.message.reply_text("فرمت: <code>CODE PERCENT [MAX_USES]</code>", parse_mode="HTML")
             return
         code = parts[0].upper()
         try:
@@ -708,7 +1222,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[ST] = S_IDLE
         return
 
-    # ── Template name/config/sub ──
     if state == S_WAIT_TPL_NAME:
         context.user_data["tpl_name"] = text.strip()
         context.user_data[ST] = S_WAIT_TPL_CFG
@@ -719,8 +1232,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["tpl_config"] = text.strip()
         context.user_data[ST] = S_WAIT_TPL_SUB
         await update.message.reply_text(
-            "🔗 لینک Sub را وارد کنید (یا <code>-</code>):",
-            parse_mode="HTML", reply_markup=admin_cancel_kb()
+            "🔗 لینک Sub را وارد کنید (یا <code>-</code>):", parse_mode="HTML", reply_markup=admin_cancel_kb()
         )
         return
 
@@ -730,13 +1242,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sub    = "" if text.strip() == "-" else text.strip()
         save_template(name, config, sub)
         await update.message.reply_text(
-            f"✅ قالب <b>{h(name)}</b> ذخیره شد.",
-            parse_mode="HTML", reply_markup=admin_main_kb()
+            f"✅ قالب <b>{h(name)}</b> ذخیره شد.", parse_mode="HTML", reply_markup=admin_main_kb()
         )
         context.user_data[ST] = S_IDLE
         return
 
-    # ── Search ──
     if state == S_WAIT_SEARCH:
         results = search_orders(text.strip())
         if not results:
@@ -745,26 +1255,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             out = f"🔍 <b>نتایج جستجو</b> ({len(results)})\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
             for o in results:
                 st_e = STATUS_EMOJI.get(o["status"], "?")
-                out += (
-                    f"{st_e} #{o['id']} | {h(o['full_name'])} | "
-                    f"{fmt_gb(o['gb_amount'])} | {fmt(o['total_price'])}\n"
-                )
+                out += f"{st_e} #{o['id']} | {h(o['full_name'])} | {fmt_gb(o['gb_amount'])} | {fmt(o['total_price'])}\n"
             await update.message.reply_text(out, parse_mode="HTML", reply_markup=admin_main_kb())
         context.user_data[ST] = S_IDLE
         return
 
-    # ── Wallet adjust ──
     if state == S_WAIT_WALLET_ADJ:
         parts = text.strip().split(maxsplit=1)
         try:
             uid    = int(parts[0])
             amount = int(parts[1]) if len(parts) > 1 else 0
-            if amount == 0:
-                raise ValueError
+            if amount == 0: raise ValueError
         except (ValueError, IndexError):
             await update.message.reply_text(
-                "فرمت: <code>USER_ID AMOUNT</code>\nمثال: <code>123456 50000</code>",
-                parse_mode="HTML"
+                "فرمت: <code>USER_ID AMOUNT</code>", parse_mode="HTML"
             )
             return
         admin_adjust_wallet(uid, amount)
@@ -781,6 +1285,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ کیف پول کاربر <code>{uid}</code> → {fmt(amount)}",
             parse_mode="HTML", reply_markup=admin_main_kb()
         )
+        log_admin(admin_id, "wallet_adjust", f"uid={uid} amount={amount}")
         context.user_data[ST] = S_IDLE
         return
 
@@ -798,6 +1303,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📤 خروجی CSV":         export_csv,
         "📈 گزارش درآمد":      show_revenue,
         "⚙️ تنظیمات":          show_settings,
+        "🌐 سرورها":            show_servers,
+        "👨‍💼 ریسلرها":          show_resellers,
+        "🔥 فلش سیل":           show_flash_sales,
+        "🎰 قرعه‌کشی":         show_lottery_panel,
+        "📜 لاگ ادمین":         show_admin_logs,
         "📢 جوین اجباری":      show_force_join,
         "👥 زیرمجموعه":        show_referral_panel,
         "🔄 ریستارت":          do_restart,
@@ -808,7 +1318,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handler(update, context)
 
 
-# ─── /reply ───────────────────────────────────────────────────────────────────
+# ─── Commands ─────────────────────────────────────────────────────────────────
 
 @admin_only
 async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -829,9 +1339,7 @@ async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if customer_bot:
         try:
             await customer_bot.send_message(
-                uid,
-                f"💬 <b>پاسخ پشتیبانی — تیکت #{tid}</b>\n\n{h(body)}",
-                parse_mode="HTML"
+                uid, f"💬 <b>پاسخ پشتیبانی — تیکت #{tid}</b>\n\n{h(body)}", parse_mode="HTML"
             )
         except Exception as e:
             logger.error("Reply delivery: %s", e)
@@ -845,6 +1353,7 @@ async def cmd_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid = int(context.args[0])
     block_user(uid)
+    log_admin(update.effective_user.id, "block_user", f"uid={uid}")
     await update.message.reply_text(f"🚫 {uid} مسدود شد.")
 
 
@@ -881,7 +1390,7 @@ async def cmd_deltpl(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_addtemplate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data[ST] = S_WAIT_TPL_NAME
     await update.message.reply_text(
-        "📋 نام قالب را وارد کنید:\n(مثال: سرور ایران ۱)", reply_markup=admin_cancel_kb()
+        "📋 نام قالب را وارد کنید:", reply_markup=admin_cancel_kb()
     )
 
 
@@ -899,10 +1408,14 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ تایید: {s['approved_orders']:,}\n"
         f"❌ رد: {s['rejected_orders']}\n\n"
         f"💰 درآمد کل: {fmt(s['total_revenue'])}\n"
+        f"📅 هفته: {fmt(s['week_revenue'])}\n"
+        f"📅 ماه: {fmt(s['month_revenue'])}\n"
         f"💼 از کیف پول: {fmt(s['wallet_revenue'])}\n"
         f"📦 گیگ فروش: {s['total_gb_sold']:,} GB\n"
         f"💼 موجودی کیف‌پول‌ها: {fmt(s['total_wallet'])}\n"
         f"💬 تیکت باز: {s['open_tickets']}\n"
+        f"🌐 سرور فعال: {s['active_servers']}\n"
+        f"👨‍💼 ریسلر: {s['total_resellers']}\n"
         f"⭐ میانگین امتیاز: {avg_r}/5",
         parse_mode="HTML", reply_markup=admin_main_kb()
     )
@@ -950,9 +1463,7 @@ async def show_pending_wallets(update: Update, context: ContextTypes.DEFAULT_TYP
                 continue
             except Exception:
                 pass
-        await update.message.reply_text(
-            text, parse_mode="HTML", reply_markup=admin_wallet_kb(tx["id"])
-        )
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=admin_wallet_kb(tx["id"]))
 
 
 async def show_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -976,14 +1487,13 @@ async def show_templates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     templates = get_templates()
     if not templates:
         await update.message.reply_text(
-            "📋 هنوز قالبی ندارید.\nبرای افزودن: /addtemplate",
-            reply_markup=admin_main_kb()
+            "📋 هنوز قالبی ندارید.\nبرای افزودن: /addtemplate", reply_markup=admin_main_kb()
         )
         return
     text = f"📋 <b>قالب‌های کانفیگ</b> ({len(templates)})\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
     for t in templates:
         sub_badge = "🔗" if t.get("sub_link") else ""
-        text += f"• <b>{h(t['name'])}</b> {sub_badge} — استفاده: {t['use_count']} | آیدی: {t['id']}\n"
+        text += f"• <b>{h(t['name'])}</b> {sub_badge} — {t['use_count']} بار | #{t['id']}\n"
     text += "\nحذف: <code>/deltpl ID</code>"
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=admin_main_kb())
 
@@ -999,8 +1509,7 @@ async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data[ST] = S_WAIT_BROADCAST
     await update.message.reply_text(
-        "📢 متن پیام همگانی را ارسال کنید:\n(HTML پشتیبانی می‌شود)",
-        reply_markup=admin_cancel_kb()
+        "📢 متن پیام همگانی را ارسال کنید:\n(HTML پشتیبانی می‌شود)", reply_markup=admin_cancel_kb()
     )
 
 
@@ -1038,14 +1547,20 @@ async def export_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_revenue(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = get_stats()
     avg = s["total_revenue"] // max(s["approved_orders"], 1)
+    daily = get_daily_revenue(7)
+    chart = ""
+    for d in daily:
+        chart += f"  📅 {d['day']}: {fmt(d['revenue'])} ({d['cnt']} سفارش)\n"
     await update.message.reply_text(
         "📈 <b>گزارش درآمد</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
         f"💵 کل: {fmt(s['total_revenue'])}\n"
+        f"📅 هفته: {fmt(s['week_revenue'])}\n"
+        f"📅 ماه: {fmt(s['month_revenue'])}\n"
         f"💼 از کیف پول: {fmt(s['wallet_revenue'])}\n"
         f"🛍️ سفارشات: {s['approved_orders']:,}\n"
         f"📦 گیگ: {s['total_gb_sold']:,} GB\n"
-        f"📊 میانگین: {fmt(avg)}\n"
-        f"📅 امروز: {fmt(s['today_revenue'])}",
+        f"📊 میانگین: {fmt(avg)}\n\n"
+        f"<b>۷ روز اخیر:</b>\n{chart}",
         parse_mode="HTML", reply_markup=admin_main_kb()
     )
 
@@ -1054,10 +1569,12 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "⚙️ <b>تنظیمات ربات</b>\n\n"
         f"💰 قیمت/گیگ: {fmt(sm.price_per_gb())}\n"
-        f"💳 کارت: {h(sm.card_number())}\n"
+        f"💳 کارت: ...{sm.card_number()[-4:]}\n"
         f"🛡 کپچا: {'✅' if sm.captcha_enabled() else '❌'}\n"
         f"🎯 آزمایش رایگان: {'✅' if sm.free_trial_enabled() else '❌'}\n"
-        f"📢 جوین اجباری: {'✅' if sm.force_join_enabled() else '❌'}\n\n"
+        f"📢 جوین اجباری: {'✅' if sm.force_join_enabled() else '❌'}\n"
+        f"⭐ امتیاز/۱۰ هزار: {sm.points_per_10k()}\n"
+        f"💸 ارزش امتیاز: {fmt(sm.points_to_toman())}\n\n"
         "یک دسته را انتخاب کنید:",
         parse_mode="HTML",
         reply_markup=admin_settings_kb()
@@ -1085,10 +1602,81 @@ async def show_referral_panel(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"📊 کل زیرمجموعه‌ها: <b>{total}</b>\n"
         f"🎁 جایزه MB: {sm.referral_bonus_mb()} مگ\n"
         f"💵 جایزه تومان: {fmt(sm.referral_bonus_toman())}\n"
-        f"🛒 حداقل خرید برای جایزه: {sm.referral_min_purchases()}",
+        f"🛒 حداقل خرید: {sm.referral_min_purchases()}",
         parse_mode="HTML",
         reply_markup=admin_referral_panel_kb()
     )
+
+
+async def show_servers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    servers = get_servers()
+    text = f"🌐 <b>سرورها</b> ({len(servers)})\n"
+    if not servers:
+        text += "\nهنوز سروری اضافه نشده."
+    await update.message.reply_text(
+        text, parse_mode="HTML", reply_markup=admin_servers_kb(servers)
+    )
+
+
+async def show_resellers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    resellers = get_resellers()
+    text = f"👨‍💼 <b>ریسلرها</b> ({len(resellers)})\n"
+    if not resellers:
+        text += "\nهنوز ریسلری اضافه نشده."
+    await update.message.reply_text(
+        text, parse_mode="HTML", reply_markup=admin_resellers_kb(resellers)
+    )
+
+
+async def show_flash_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sales = get_flash_sales()
+    text = f"🔥 <b>فلش سیل‌ها</b> ({len(sales)})\n"
+    if not sales:
+        text += "\nهنوز فلش سیلی تعریف نشده."
+    await update.message.reply_text(
+        text, parse_mode="HTML", reply_markup=admin_flash_kb(sales)
+    )
+
+
+async def show_lottery_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lt = get_active_lottery()
+    lotteries = [lt] if lt else []
+    text = f"🎰 <b>قرعه‌کشی</b>\n\n"
+    if lt:
+        entries = get_lottery_entries(lt["id"])
+        text += f"✅ قرعه‌کشی فعال: <b>{h(lt['name'])}</b>\n👥 شرکت‌کننده: {len(entries)}"
+    else:
+        text += "هیچ قرعه‌کشی فعالی وجود ندارد."
+    await update.message.reply_text(
+        text, parse_mode="HTML", reply_markup=admin_lottery_kb(lotteries)
+    )
+
+
+async def show_admin_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _show_logs_page(update.message, 0)
+
+
+async def _show_logs_page(message, page: int, edit=False, query=None):
+    logs = get_admin_logs(limit=200)
+    per_page = 15
+    start = page * per_page
+    chunk = logs[start:start + per_page]
+    has_next = (start + per_page) < len(logs)
+
+    text = f"📜 <b>لاگ ادمین</b> (صفحه {page+1})\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    if not chunk:
+        text += "لاگی وجود ندارد."
+    for lg in chunk:
+        text += f"🔹 {lg['action']} | {h(lg['details'][:40])}\n   {fmt_dt(lg['created_at'])}\n\n"
+
+    kb = admin_logs_kb(page, has_next)
+    if edit and query:
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            await message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+    else:
+        await message.reply_text(text, parse_mode="HTML", reply_markup=kb)
 
 
 async def do_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1100,23 +1688,16 @@ async def do_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "⚙️ <b>راهنمای ادمین</b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📋 <b>سفارشات:</b>\n"
-        "  تایید: دکمه ✅ روی سفارش\n"
-        "  رد: دکمه ❌ روی سفارش\n\n"
-        "💬 <b>پشتیبانی:</b>\n"
-        "  <code>/reply_ID متن پاسخ</code>\n\n"
-        "💼 <b>کیف پول:</b>\n"
-        "  <code>/wallet</code> → تنظیم دستی\n\n"
-        "🚫 <b>مسدودسازی:</b>\n"
-        "  <code>/block ID</code> | <code>/unblock ID</code>\n\n"
-        "📋 <b>قالب کانفیگ:</b>\n"
-        "  <code>/addtemplate</code> | <code>/deltpl ID</code>\n\n"
-        "⚙️ <b>تنظیمات پویا:</b>\n"
-        "  دکمه ⚙️ تنظیمات در منو\n\n"
-        "📢 <b>جوین اجباری:</b>\n"
-        "  دکمه 📢 جوین اجباری در منو\n\n"
-        "🔄 <b>ریستارت:</b>\n"
-        "  دکمه 🔄 ریستارت در منو",
+        "📋 <b>سفارشات:</b>\n  تایید ✅ / رد ❌ روی سفارش\n\n"
+        "💬 <b>پشتیبانی:</b>\n  <code>/reply_ID متن</code>\n\n"
+        "💼 <b>کیف پول:</b>\n  <code>/wallet</code>\n\n"
+        "🚫 <b>مسدودسازی:</b>\n  <code>/block ID</code> | <code>/unblock ID</code>\n\n"
+        "📋 <b>قالب:</b>\n  <code>/addtemplate</code> | <code>/deltpl ID</code>\n\n"
+        "🌐 <b>سرورها:</b> منوی 🌐 سرورها\n"
+        "👨‍💼 <b>ریسلرها:</b> منوی 👨‍💼 ریسلرها\n"
+        "🔥 <b>فلش سیل:</b> منوی 🔥 فلش سیل\n"
+        "🎰 <b>قرعه‌کشی:</b> منوی 🎰 قرعه‌کشی\n"
+        "📜 <b>لاگ:</b> منوی 📜 لاگ ادمین",
         parse_mode="HTML", reply_markup=admin_main_kb()
     )
 
@@ -1139,6 +1720,7 @@ async def _show_user_profile(message, user_id: int):
         f"🛍️ سفارشات: {u['total_orders']}\n"
         f"💰 کل خرید: {fmt(u['total_spent'])}\n"
         f"💼 کیف پول: {fmt(u['wallet_balance'])}\n"
+        f"⭐ امتیاز: {u.get('loyalty_points', 0)}\n"
         f"👥 زیرمجموعه: {len(refs)}\n"
         f"🎁 بونوس MB: {u.get('bonus_mb', 0)}\n"
         f"🎯 آزمایش: {'استفاده شده' if u['free_trial_used'] else 'نشده'}\n"
@@ -1173,4 +1755,4 @@ def setup_admin_bot(app: Application, customer_bot_instance: Bot = None) -> None
         handle_text
     ))
     app.add_error_handler(error_handler)
-    logger.info("Admin bot v2 ready.")
+    logger.info("Admin bot v3 ready.")
