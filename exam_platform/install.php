@@ -7,6 +7,11 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
+// install.php is standalone — define h() locally
+function h(string $s): string {
+    return htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+}
+
 $host   = getenv('DB_HOST') ?: 'localhost';
 $user   = getenv('DB_USER') ?: 'root';
 $pass   = getenv('DB_PASS') ?: '';
