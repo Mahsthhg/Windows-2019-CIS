@@ -136,9 +136,13 @@ if (isset($_POST['reorder'])) {
 }
 
 // ── AJAX: افزودن/ویرایش سوال ────────────────────────────────────
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_question'])) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $rawInput = file_get_contents('php://input');
+    $jsonBody  = json_decode($rawInput, true) ?: [];
+}
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['save_question']) || isset($jsonBody['save_question']))) {
     header('Content-Type: application/json; charset=utf-8');
-    $body = json_decode(file_get_contents('php://input'), true) ?? $_POST;
+    $body = !empty($jsonBody) ? $jsonBody : $_POST;
 
     $fid    = validateInt($body['form_id'] ?? 0, 1);
     $qid    = validateInt($body['question_id'] ?? 0, 0);
