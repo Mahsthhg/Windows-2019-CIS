@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>آزمون مطالعات هشتم</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="start-page" class="page active">
+  <div class="pixel-bg"></div>
+  <div class="intro-box">
+    <h1 class="bismillah">بِسْمِ اللَّهِ الرَّحْمٰنِ الرَّحِیمِ</h1>
+    <h2>ساخته شده توسط حمیده حسینی<br>دبیر مطالعات ناحیه یک مشهد</h2>
+    <label>نام و نام خانوادگی:</label>
+    <input type="text" id="studentName" placeholder="نام کامل خود را وارد کنید">
+    <button id="startBtn" class="btn">شروع آزمون</button>
+  </div>
+</div>
+
+<div id="quiz-page" class="page">
+  <h2 class="title">درس ۱۳ تا ۲۴ مطالعات هشتم</h2>
+  <div id="scoreboard">
+    <span>درست: <b id="correctCount">0</b></span> |
+    <span>غلط: <b id="wrongCount">0</b></span> |
+    <span>زمان: <b id="timer">0</b> ثانیه</span> |
+    <span>امتیاز: <b id="score">0</b></span>
+  </div>
+  <div id="question-box"></div>
+  <div class="btn-row">
+    <button id="nextBtn" class="btn hidden">سؤال بعدی ▶️</button>
+    <button id="skipBtn" class="btn btn-skip">پایان آزمون ⏭️</button>
+  </div>
+</div>
+
+<div id="result-page" class="page">
+  <h2>نتیجه آزمون</h2>
+  <p id="resultText"></p>
+  <button onclick="location.reload()" class="btn">شروع مجدد 🔁</button>
+</div>
+
+<script src="questions.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
