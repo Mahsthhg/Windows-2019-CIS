@@ -153,7 +153,24 @@ body{font-family:'Vazirmatn',sans-serif;background:var(--bg);color:var(--text);m
                 <strong style="font-size:16px;"><?= h($selectedExam['title'] ?? '') ?></strong>
                 <span style="margin-right:12px;font-size:13px;color:var(--muted);">معلم: <?= h($selectedExam['teacher_name'] ?? '') ?></span>
             </div>
-            <div style="display:flex;gap:8px;">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <!-- Live toggles -->
+                <div style="display:flex;align-items:center;gap:8px;background:white;border:2px solid var(--border);border-radius:20px;padding:6px 14px;">
+                    <span style="font-size:12px;font-weight:700;color:var(--muted);">وب‌کم:</span>
+                    <label style="position:relative;display:inline-block;width:36px;height:20px;cursor:pointer;">
+                        <input type="checkbox" id="toggleCam" <?= ($selectedExam['require_camera'] ?? 0) ? 'checked' : '' ?> onchange="toggleSetting('require_camera', this.checked)" style="opacity:0;width:0;height:0;">
+                        <span id="camSlider" style="position:absolute;inset:0;background:<?= ($selectedExam['require_camera'] ?? 0) ? '#6366f1' : '#cbd5e1' ?>;border-radius:20px;transition:.3s;"></span>
+                        <span id="camThumb" style="position:absolute;width:14px;height:14px;background:white;border-radius:50%;top:3px;transition:.3s;left:<?= ($selectedExam['require_camera'] ?? 0) ? '19px' : '3px' ?>;"></span>
+                    </label>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;background:white;border:2px solid var(--border);border-radius:20px;padding:6px 14px;">
+                    <span style="font-size:12px;font-weight:700;color:var(--muted);">GPS:</span>
+                    <label style="position:relative;display:inline-block;width:36px;height:20px;cursor:pointer;">
+                        <input type="checkbox" id="toggleGps" <?= ($selectedExam['gps_required'] ?? 0) ? 'checked' : '' ?> onchange="toggleSetting('gps_required', this.checked)" style="opacity:0;width:0;height:0;">
+                        <span id="gpsSlider" style="position:absolute;inset:0;background:<?= ($selectedExam['gps_required'] ?? 0) ? '#10b981' : '#cbd5e1' ?>;border-radius:20px;transition:.3s;"></span>
+                        <span id="gpsThumb" style="position:absolute;width:14px;height:14px;background:white;border-radius:50%;top:3px;transition:.3s;left:<?= ($selectedExam['gps_required'] ?? 0) ? '19px' : '3px' ?>;"></span>
+                    </label>
+                </div>
                 <a href="snapshots.php?form_id=<?= $form_id ?>" class="btn btn-cam" style="text-decoration:none;padding:8px 16px;">📷 اسنپشات‌ها</a>
                 <a href="gps_monitor.php?form_id=<?= $form_id ?>" class="btn" style="background:#10b981;color:white;text-decoration:none;padding:8px 16px;">🗺️ نقشه GPS</a>
             </div>
@@ -196,6 +213,29 @@ let refreshTimer;
 
 function selectExam(id) {
     window.location.href = 'monitor.php?form_id=' + id;
+}
+
+function toggleSetting(setting, enabled) {
+    const colors = { require_camera: '#6366f1', gps_required: '#10b981' };
+    const sliderId = setting === 'require_camera' ? 'camSlider' : 'gpsSlider';
+    const thumbId  = setting === 'require_camera' ? 'camThumb'  : 'gpsThumb';
+    const slider   = document.getElementById(sliderId);
+    const thumb    = document.getElementById(thumbId);
+    if (slider) slider.style.background = enabled ? (colors[setting] || '#6366f1') : '#cbd5e1';
+    if (thumb)  thumb.style.left = enabled ? '19px' : '3px';
+
+    fetch('../api/toggle_exam_setting.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ form_id: FORM_ID, setting: setting, value: enabled ? 1 : 0, csrf_token: CSRF_TOKEN })
+    })
+    .then(r => r.json())
+    .then(d => {
+        const label = { require_camera: 'وب‌کم', gps_required: 'GPS' }[setting] || setting;
+        if (d.ok) showToast((enabled ? '✅ ' : '⛔ ') + label + (enabled ? ' فعال شد' : ' غیرفعال شد'), enabled ? 'success' : 'info');
+        else      showToast('❌ خطا: ' + (d.error || 'نامشخص'), 'error');
+    })
+    .catch(() => showToast('❌ خطای شبکه', 'error'));
 }
 
 <?php if ($form_id): ?>
