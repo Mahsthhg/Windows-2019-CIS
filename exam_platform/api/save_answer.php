@@ -3,6 +3,7 @@
  * api/save_answer.php - ذخیره خودکار پاسخ‌ها
  */
 require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/security.php';
 header('Content-Type: application/json');
 
 // فقط auto-save

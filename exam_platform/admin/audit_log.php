@@ -18,7 +18,6 @@ if ($search) {
     $params = ["%$search%", "%$search%", "%$search%"];
 }
 
-$total = (int)$pdo->prepare("SELECT COUNT(*) FROM admin_audit_log l $where")->execute($params) ? 0 : 0;
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM admin_audit_log l $where");
 $stmt->execute($params);
 $total = (int)$stmt->fetchColumn();

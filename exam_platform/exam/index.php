@@ -18,6 +18,12 @@ if (!$form) die(renderError('آزمون یافت نشد یا فعال نیست')
 $settings = $form;
 $fid      = (int)$form['id'];
 $tid      = (int)$form['teacher_id'];
+$clientIP = getClientIP();
+
+// بررسی IP در لیست سیاه
+$stmt = $pdo->prepare("SELECT id FROM ip_blacklist WHERE ip_address=? AND is_active=1 AND (expires_at IS NULL OR expires_at > NOW())");
+$stmt->execute([$clientIP]);
+if ($stmt->fetch()) die(renderError('دسترسی شما مسدود شده است. با مدیر تماس بگیرید.'));
 
 // بررسی زمان
 $now = time();
@@ -45,7 +51,6 @@ if ($form['password']) {
 }
 
 // بررسی تعداد تلاش
-$clientIP = getClientIP();
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM answers WHERE form_id=? AND user_ip=? AND status='completed'");
 $stmt->execute([$fid, $clientIP]);
 $attempts = (int)$stmt->fetchColumn();
@@ -100,12 +105,6 @@ if ($form['shuffle_options']) {
     }
     unset($q);
 }
-
-// بررسی IP در لیست سیاه
-$clientIP = getClientIP();
-$stmt = $pdo->prepare("SELECT id FROM ip_blacklist WHERE ip_address=? AND is_active=1 AND (expires_at IS NULL OR expires_at > NOW())");
-$stmt->execute([$clientIP]);
-if ($stmt->fetch()) die(renderError('دسترسی شما مسدود شده است. با مدیر تماس بگیرید.'));
 
 // محاسبه حداکثر امتیاز
 $maxScore = 0;

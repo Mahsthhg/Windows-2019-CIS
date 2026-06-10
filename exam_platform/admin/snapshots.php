@@ -40,24 +40,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Get exams list
 $exams = $pdo->query("SELECT f.id, f.title, COUNT(s.id) as snap_count FROM forms f LEFT JOIN exam_snapshots s ON s.form_id=f.id GROUP BY f.id ORDER BY snap_count DESC LIMIT 50")->fetchAll();
 
-// Build query
-$where = $form_id ? "WHERE s.form_id = $form_id" : "WHERE 1=1";
-if ($filter === 'flagged') $where .= " AND s.flagged=1";
-if ($filter === 'no_face')  $where .= " AND s.face_detected=0";
-if ($filter === 'admin_req') $where .= " AND s.trigger_type='admin_request'";
+// Build query with named conditions (safe)
+$conditions = ['1=1'];
+$params      = [];
+if ($form_id) { $conditions[] = 's.form_id = ?'; $params[] = $form_id; }
+if ($filter === 'flagged')   $conditions[] = 's.flagged=1';
+if ($filter === 'no_face')   $conditions[] = 's.face_detected=0';
+if ($filter === 'admin_req') $conditions[] = "s.trigger_type='admin_request'";
+$where = 'WHERE ' . implode(' AND ', $conditions);
 
-$total = (int)$pdo->query("SELECT COUNT(*) FROM exam_snapshots s $where")->fetchColumn();
+$countStmt = $pdo->prepare("SELECT COUNT(*) FROM exam_snapshots s $where");
+$countStmt->execute($params);
+$total = (int)$countStmt->fetchColumn();
 $pages = max(1, ceil($total / $perPage));
 
+$listParams = array_merge($params, [$perPage, $offset]);
 $stmt = $pdo->prepare("
     SELECT s.*, f.title as exam_title
     FROM exam_snapshots s
     JOIN forms f ON f.id=s.form_id
     $where
     ORDER BY s.created_at DESC
-    LIMIT $perPage OFFSET $offset
+    LIMIT ? OFFSET ?
 ");
-$stmt->execute();
+$stmt->execute($listParams);
 $snapshots = $stmt->fetchAll();
 
 $csrf = generateCsrfToken();

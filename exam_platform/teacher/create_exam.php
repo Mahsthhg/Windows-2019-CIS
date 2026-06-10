@@ -96,8 +96,8 @@ if (isset($_GET['duplicate'])) {
         $orig = $s->fetch();
         if ($orig) {
             $code = strtoupper(substr(md5(uniqid(rand(), true)), 0, 8));
-            $pdo->prepare("INSERT INTO forms (teacher_id,title,description,access_code,duration,shuffle_questions,shuffle_options,allow_back,show_results,negative_marking,pass_threshold,max_attempts,require_fullscreen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
-                ->execute([$tid, 'کپی: ' . $orig['title'], $orig['description'], $code, $orig['duration'], $orig['shuffle_questions'], $orig['shuffle_options'], $orig['allow_back'], $orig['show_results'], $orig['negative_marking'], $orig['pass_threshold'], $orig['max_attempts'], $orig['require_fullscreen']]);
+            $pdo->prepare("INSERT INTO forms (teacher_id,title,description,access_code,duration,shuffle_questions,shuffle_options,allow_back,show_results,negative_marking,pass_threshold,max_attempts,require_fullscreen,require_camera,gps_required,gps_lat,gps_lng,gps_radius) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                ->execute([$tid, 'کپی: ' . $orig['title'], $orig['description'], $code, $orig['duration'], $orig['shuffle_questions'], $orig['shuffle_options'], $orig['allow_back'], $orig['show_results'], $orig['negative_marking'], $orig['pass_threshold'], $orig['max_attempts'], $orig['require_fullscreen'], $orig['require_camera'] ?? 0, $orig['gps_required'] ?? 0, $orig['gps_lat'] ?? null, $orig['gps_lng'] ?? null, $orig['gps_radius'] ?? 500]);
             $newId = (int)$pdo->lastInsertId();
             // کپی سوالات
             $qs = $pdo->prepare("SELECT * FROM questions WHERE form_id=? ORDER BY order_index");

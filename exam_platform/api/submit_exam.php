@@ -163,6 +163,10 @@ $stmt->execute([
 
 $answerId = (int)$pdo->lastInsertId();
 
+// ذخیره نام دانش‌آموز برای watermark و webcam در آزمون بعدی
+if ($user_name) $_SESSION['exam_student_name_' . $fid] = $user_name;
+$_SESSION['exam_answer_id_' . $fid] = $answerId;
+
 // تمیز کردن session
 unset(
     $_SESSION['exam_start_' . $fid],
