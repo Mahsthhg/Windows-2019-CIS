@@ -14,7 +14,7 @@ $body = json_decode(file_get_contents('php://input'), true) ?? [];
 $fid  = validateInt($body['form_id'] ?? 0, 1);
 if (!$fid) { echo '{}'; exit(); }
 
-$VALID_TYPES = ['tab_switch','window_blur','fullscreen_exit','copy_paste','right_click','devtools','screenshot_key','context_menu','keyboard_shortcut','mouse_out','multiple_submit','time_anomaly'];
+$VALID_TYPES = ['tab_switch','window_blur','fullscreen_exit','copy_paste','right_click','devtools','screenshot_key','context_menu','keyboard_shortcut','mouse_out','multiple_submit','time_anomaly','gps_collusion','no_face','multiple_faces','camera_denied'];
 $type    = in_array($body['type'] ?? '', $VALID_TYPES) ? $body['type'] : 'tab_switch';
 $details = sanitizeString($body['details'] ?? '', 200);
 $ip      = getClientIP();

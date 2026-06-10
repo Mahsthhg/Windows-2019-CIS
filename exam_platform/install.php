@@ -192,12 +192,127 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     'tab_switch','window_blur','fullscreen_exit',
                                     'copy_paste','right_click','devtools',
                                     'screenshot_key','context_menu','keyboard_shortcut',
-                                    'mouse_out','multiple_submit','time_anomaly'
+                                    'mouse_out','multiple_submit','time_anomaly',
+                                    'gps_collusion','no_face','multiple_faces','camera_denied'
                                   ) NOT NULL,
                     `details`     VARCHAR(500),
                     `created_at`  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (`form_id`) REFERENCES `forms`(`id`) ON DELETE CASCADE,
                     INDEX (`form_id`), INDEX (`user_ip`)
+                ) ENGINE=InnoDB
+            ");
+
+            // ── اسنپشات‌های وب‌کم ─────────────────────────────────────────
+            $pdo->exec("
+                CREATE TABLE `exam_snapshots` (
+                    `id`            INT AUTO_INCREMENT PRIMARY KEY,
+                    `form_id`       INT NOT NULL,
+                    `answer_id`     INT,
+                    `user_ip`       VARCHAR(45),
+                    `student_name`  VARCHAR(200),
+                    `image_path`    VARCHAR(500) NOT NULL,
+                    `face_detected` TINYINT DEFAULT 0,
+                    `face_count`    INT DEFAULT 0,
+                    `trigger_type`  ENUM('auto','admin_request','cheat_detect','exam_start','exam_end') DEFAULT 'auto',
+                    `reviewed`      TINYINT DEFAULT 0,
+                    `flagged`       TINYINT DEFAULT 0,
+                    `notes`         TEXT,
+                    `created_at`    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (`form_id`) REFERENCES `forms`(`id`) ON DELETE CASCADE,
+                    INDEX (`form_id`), INDEX (`user_ip`), INDEX (`flagged`)
+                ) ENGINE=InnoDB
+            ");
+
+            // ── موقعیت‌های GPS ────────────────────────────────────────────
+            $pdo->exec("
+                CREATE TABLE `gps_locations` (
+                    `id`           INT AUTO_INCREMENT PRIMARY KEY,
+                    `form_id`      INT NOT NULL,
+                    `answer_id`    INT,
+                    `user_ip`      VARCHAR(45),
+                    `student_name` VARCHAR(200),
+                    `latitude`     DECIMAL(10,8) NOT NULL,
+                    `longitude`    DECIMAL(11,8) NOT NULL,
+                    `accuracy`     DECIMAL(10,2),
+                    `out_of_bounds`TINYINT DEFAULT 0,
+                    `cluster_id`   INT DEFAULT NULL,
+                    `flagged`      TINYINT DEFAULT 0,
+                    `created_at`   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (`form_id`) REFERENCES `forms`(`id`) ON DELETE CASCADE,
+                    INDEX (`form_id`), INDEX (`user_ip`), INDEX (`flagged`)
+                ) ENGINE=InnoDB
+            ");
+
+            // ── درخواست‌های وب‌کم ─────────────────────────────────────────
+            $pdo->exec("
+                CREATE TABLE `camera_requests` (
+                    `id`           INT AUTO_INCREMENT PRIMARY KEY,
+                    `form_id`      INT NOT NULL,
+                    `user_ip`      VARCHAR(45),
+                    `requested_by` INT,
+                    `status`       ENUM('pending','fulfilled','denied','cancelled') DEFAULT 'pending',
+                    `requested_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    `fulfilled_at` DATETIME,
+                    INDEX (`form_id`), INDEX (`user_ip`), INDEX (`status`)
+                ) ENGINE=InnoDB
+            ");
+
+            // ── لاگ عملکرد ادمین ─────────────────────────────────────────
+            $pdo->exec("
+                CREATE TABLE `admin_audit_log` (
+                    `id`          INT AUTO_INCREMENT PRIMARY KEY,
+                    `admin_id`    INT,
+                    `action`      VARCHAR(100) NOT NULL,
+                    `target_type` VARCHAR(50),
+                    `target_id`   INT,
+                    `details`     TEXT,
+                    `ip_address`  VARCHAR(45),
+                    `created_at`  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX (`admin_id`), INDEX (`action`), INDEX (`created_at`)
+                ) ENGINE=InnoDB
+            ");
+
+            // ── لیست سیاه IP ─────────────────────────────────────────────
+            $pdo->exec("
+                CREATE TABLE `ip_blacklist` (
+                    `id`          INT AUTO_INCREMENT PRIMARY KEY,
+                    `ip_address`  VARCHAR(45) UNIQUE NOT NULL,
+                    `reason`      TEXT,
+                    `blocked_by`  INT,
+                    `expires_at`  DATETIME,
+                    `is_active`   TINYINT DEFAULT 1,
+                    `created_at`  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX (`ip_address`), INDEX (`is_active`)
+                ) ENGINE=InnoDB
+            ");
+
+            // ── اعلان‌ها ──────────────────────────────────────────────────
+            $pdo->exec("
+                CREATE TABLE `notifications` (
+                    `id`          INT AUTO_INCREMENT PRIMARY KEY,
+                    `user_id`     INT,
+                    `type`        VARCHAR(50) NOT NULL,
+                    `title`       VARCHAR(200),
+                    `message`     TEXT,
+                    `is_read`     TINYINT DEFAULT 0,
+                    `data`        JSON,
+                    `created_at`  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX (`user_id`), INDEX (`is_read`)
+                ) ENGINE=InnoDB
+            ");
+
+            // ── منطق شرطی سوالات ─────────────────────────────────────────
+            $pdo->exec("
+                CREATE TABLE `question_conditions` (
+                    `id`            INT AUTO_INCREMENT PRIMARY KEY,
+                    `question_id`   INT NOT NULL,
+                    `depends_on_id` INT NOT NULL,
+                    `operator`      ENUM('equals','not_equals','contains','greater','less') DEFAULT 'equals',
+                    `value`         VARCHAR(500),
+                    `action`        ENUM('show','hide') DEFAULT 'show',
+                    FOREIGN KEY (`question_id`)   REFERENCES `questions`(`id`) ON DELETE CASCADE,
+                    FOREIGN KEY (`depends_on_id`) REFERENCES `questions`(`id`) ON DELETE CASCADE,
+                    INDEX (`question_id`)
                 ) ENGINE=InnoDB
             ");
 

@@ -98,6 +98,25 @@ $csrf = generateCsrfToken();
     <a href="?logout=1" style="background:rgba(239,68,68,.3);color:white;padding:10px 20px;border-radius:20px;text-decoration:none;font-weight:700;">🚪 خروج</a>
 </div>
 
+<!-- Quick Navigation -->
+<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px;">
+    <a href="monitor.php" style="display:flex;align-items:center;gap:8px;padding:12px 20px;background:white;border-radius:16px;text-decoration:none;color:#0f172a;font-weight:700;font-size:14px;border:2px solid #e2e8f0;transition:.2s;" onmouseover="this.style.borderColor='#6366f1'" onmouseout="this.style.borderColor='#e2e8f0'">
+        🎥 مانیتورینگ زنده
+    </a>
+    <a href="snapshots.php" style="display:flex;align-items:center;gap:8px;padding:12px 20px;background:white;border-radius:16px;text-decoration:none;color:#0f172a;font-weight:700;font-size:14px;border:2px solid #e2e8f0;transition:.2s;" onmouseover="this.style.borderColor='#6366f1'" onmouseout="this.style.borderColor='#e2e8f0'">
+        📷 اسنپشات‌های وب‌کم
+    </a>
+    <a href="gps_monitor.php" style="display:flex;align-items:center;gap:8px;padding:12px 20px;background:white;border-radius:16px;text-decoration:none;color:#0f172a;font-weight:700;font-size:14px;border:2px solid #e2e8f0;transition:.2s;" onmouseover="this.style.borderColor='#6366f1'" onmouseout="this.style.borderColor='#e2e8f0'">
+        🗺️ نقشه GPS
+    </a>
+    <a href="ip_blacklist.php" style="display:flex;align-items:center;gap:8px;padding:12px 20px;background:white;border-radius:16px;text-decoration:none;color:#0f172a;font-weight:700;font-size:14px;border:2px solid #e2e8f0;transition:.2s;" onmouseover="this.style.borderColor='#6366f1'" onmouseout="this.style.borderColor='#e2e8f0'">
+        🚫 لیست سیاه IP
+    </a>
+    <a href="audit_log.php" style="display:flex;align-items:center;gap:8px;padding:12px 20px;background:white;border-radius:16px;text-decoration:none;color:#0f172a;font-weight:700;font-size:14px;border:2px solid #e2e8f0;transition:.2s;" onmouseover="this.style.borderColor='#6366f1'" onmouseout="this.style.borderColor='#e2e8f0'">
+        📋 لاگ عملکرد
+    </a>
+</div>
+
 <!-- Stats -->
 <div class="stats-grid" style="margin-bottom:32px;">
     <div class="stat-card stat-blue"><div class="stat-icon">👨‍🏫</div><div class="stat-value"><?= $stats['teachers'] ?></div><div class="stat-label">معلم فعال</div></div>

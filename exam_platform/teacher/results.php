@@ -88,6 +88,7 @@ if ($fid) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>نتایج آزمون‌ها</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 <?php include __DIR__ . '/../assets/css/panel.css'; ?>
 .analytics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin-bottom:24px;}
@@ -153,35 +154,63 @@ if ($fid) {
     <div class="an-card"><div class="an-value"><?= $analytics['min_score'] ?></div><div class="an-label">📉 پایین‌ترین نمره</div></div>
 </div>
 
-<!-- Distribution Chart -->
+<!-- Distribution Chart + Analytics Charts -->
 <div class="card" style="margin-bottom:24px;">
     <div class="card-header">
-        <h3>📊 توزیع نمرات</h3>
+        <h3>📊 آنالیتیکس پیشرفته</h3>
         <div style="display:flex;gap:8px;">
             <a href="results.php?form=<?= $fid ?>&export_csv=1" class="btn btn-success btn-sm">📥 خروجی Excel/CSV</a>
         </div>
     </div>
     <div class="card-body">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+            <div>
+                <div style="font-size:13px;font-weight:700;color:var(--text-muted);margin-bottom:12px;">توزیع نمرات</div>
+                <canvas id="distChart" height="200"></canvas>
+            </div>
+            <div>
+                <div style="font-size:13px;font-weight:700;color:var(--text-muted);margin-bottom:12px;">قبول/مردود</div>
+                <canvas id="passChart" height="200"></canvas>
+            </div>
+        </div>
         <?php
-        $maxDist = max($analytics['distribution']) ?: 1;
+        // Answer similarity detection
+        $similarPairs = [];
+        if (count($results) >= 2) {
+            foreach ($results as $i => $a) {
+                if (!$a['answers']) continue;
+                $aAns = json_decode($a['answers'], true) ?: [];
+                foreach ($results as $j => $b) {
+                    if ($j <= $i || !$b['answers']) continue;
+                    $bAns = json_decode($b['answers'], true) ?: [];
+                    $common = 0;
+                    $total  = 0;
+                    foreach ($aAns as $qid => $val) {
+                        if (!isset($bAns[$qid])) continue;
+                        $total++;
+                        if (trim(strtolower((string)$val)) === trim(strtolower((string)$bAns[$qid]))) $common++;
+                    }
+                    if ($total >= 3 && $common / $total >= 0.85) {
+                        $similarPairs[] = [
+                            'a' => $a['user_name'] ?: $a['user_ip'],
+                            'b' => $b['user_name'] ?: $b['user_ip'],
+                            'similarity' => round($common / $total * 100),
+                        ];
+                    }
+                }
+            }
+        }
         ?>
-        <div class="chart-bar-wrap">
-            <?php foreach ($analytics['distribution'] as $bucket => $count):
-                $h = $count > 0 ? max(8, ($count / $maxDist) * 100) : 3;
-                $opacity = $count === 0 ? '.2' : '1';
-            ?>
-            <div class="chart-bar"
-                 style="height:<?= $h ?>%;opacity:<?= $opacity ?>"
-                 data-val="<?= $count ?> نفر (<?= $bucket ?>-<?= $bucket+10 ?>%)">
+        <?php if (!empty($similarPairs)): ?>
+        <div style="margin-top:20px;background:#fff5f5;border:2px solid #fecaca;border-radius:16px;padding:16px;">
+            <div style="font-size:14px;font-weight:800;color:#991b1b;margin-bottom:10px;">🚨 تشخیص پاسخ‌های مشابه (احتمال رونویسی)</div>
+            <?php foreach ($similarPairs as $pair): ?>
+            <div style="font-size:13px;color:#dc2626;padding:4px 0;border-bottom:1px solid #fecaca;">
+                ⚠️ <strong><?= h($pair['a']) ?></strong> و <strong><?= h($pair['b']) ?></strong> — <?= $pair['similarity'] ?>% شباهت
             </div>
             <?php endforeach; ?>
         </div>
-        <div class="chart-labels">
-            <?php foreach ($analytics['distribution'] as $bucket => $count): ?>
-            <div class="chart-label"><?= $bucket ?>-<?= $bucket+10 ?></div>
-            <?php endforeach; ?>
-        </div>
-        <p style="text-align:center;font-size:11px;color:var(--text-muted);margin-top:8px;">بازه درصد نمرات</p>
+        <?php endif; ?>
     </div>
 </div>
 
@@ -205,16 +234,31 @@ if ($fid) {
                     <th>📭</th>
                     <th>تقلب</th>
                     <th>زمان</th>
+                    <th>📍</th>
                     <th>عملیات</th>
                 </tr>
             </thead>
             <tbody>
-                <?php foreach ($results as $i => $r):
+                <?php
+                // Pre-load snapshot counts and GPS flags
+                $snapCounts = [];
+                $gpsFlagged = [];
+                if ($fid) {
+                    $sc = $pdo->prepare("SELECT user_ip, COUNT(*) as cnt FROM exam_snapshots WHERE form_id=? GROUP BY user_ip");
+                    $sc->execute([$fid]);
+                    foreach ($sc->fetchAll() as $s) $snapCounts[$s['user_ip']] = $s['cnt'];
+                    $gf = $pdo->prepare("SELECT DISTINCT user_ip FROM gps_locations WHERE form_id=? AND flagged=1");
+                    $gf->execute([$fid]);
+                    foreach ($gf->fetchAll() as $s) $gpsFlagged[$s['user_ip']] = true;
+                }
+                foreach ($results as $i => $r):
                     $pct = $r['max_score']>0 ? round($r['score']/$r['max_score']*100) : 0;
                     $pctClass = $pct>=70?'high':($pct>=40?'mid':'low');
                     $hasCheat = $r['cheat_count']>0;
+                    $snapCnt = $snapCounts[$r['user_ip']] ?? 0;
+                    $gflag   = $gpsFlagged[$r['user_ip']] ?? false;
                 ?>
-                <tr class="<?= $hasCheat ? 'highlight-row' : '' ?>">
+                <tr class="<?= ($hasCheat || $gflag) ? 'highlight-row' : '' ?>">
                     <td><?= $i+1 ?></td>
                     <td><strong><?= h($r['user_name'] ?: '(ناشناس)') ?></strong></td>
                     <td style="font-family:monospace;"><?= h($r['user_national'] ?: '—') ?></td>
@@ -223,8 +267,14 @@ if ($fid) {
                     <td style="color:var(--success);font-weight:700;"><?= $r['correct_count'] ?></td>
                     <td style="color:var(--danger);font-weight:700;"><?= $r['wrong_count'] ?></td>
                     <td style="color:var(--warning);font-weight:700;"><?= $r['empty_count'] ?></td>
-                    <td><?= $hasCheat ? '<span class="cheat-badge">⚠️ '.$r['cheat_count'].'</span>' : '—' ?></td>
+                    <td>
+                        <?= $hasCheat ? '<span class="cheat-badge">⚠️ '.$r['cheat_count'].'</span>' : '—' ?>
+                        <?= $snapCnt ? '<span style="background:#ede9fe;color:#4f46e5;padding:2px 6px;border-radius:10px;font-size:11px;font-weight:700;margin-right:4px;">📷 '.$snapCnt.'</span>' : '' ?>
+                    </td>
                     <td style="font-size:12px;color:var(--text-muted);"><?= substr($r['submitted_at'],0,16) ?></td>
+                    <td>
+                        <?= $gflag ? '<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">🚨 GPS</span>' : '<span style="color:#94a3b8;font-size:12px;">—</span>' ?>
+                    </td>
                     <td>
                         <button class="btn btn-secondary btn-sm" onclick="showDetail(<?= $r['id'] ?>)">جزئیات</button>
                         <a href="?form=<?= $fid ?>&reset=<?= $r['id'] ?>" class="btn btn-warning btn-sm" onclick="return confirm('شانس دوباره؟')">🔄</a>
@@ -280,6 +330,7 @@ const RESULTS = <?= json_encode(array_map(fn($r) => [
     'score' => $r['score'],
     'max_score' => $r['max_score'],
     'submitted_at' => $r['submitted_at'],
+    'cheat_count' => $r['cheat_count'],
 ], $results), JSON_UNESCAPED_UNICODE) ?>;
 const QUESTIONS = <?= json_encode(array_map(fn($q) => [
     'id' => $q['id'],
@@ -289,6 +340,54 @@ const QUESTIONS = <?= json_encode(array_map(fn($q) => [
     'options' => $q['options'] ? json_decode($q['options'], true) : null,
     'points' => $q['points'],
 ], $questions ?? []), JSON_UNESCAPED_UNICODE) ?>;
+
+const DIST_DATA = <?= json_encode(array_values($analytics['distribution']), JSON_UNESCAPED_UNICODE) ?>;
+const DIST_LABELS = <?= json_encode(array_map(fn($b) => $b.'-'.($b+10).'%', array_keys($analytics['distribution'])), JSON_UNESCAPED_UNICODE) ?>;
+const PASS_COUNT = <?= $analytics['pass_count'] ?>;
+const FAIL_COUNT = <?= $analytics['total'] - $analytics['pass_count'] ?>;
+
+// Distribution bar chart
+new Chart(document.getElementById('distChart'), {
+    type: 'bar',
+    data: {
+        labels: DIST_LABELS,
+        datasets: [{
+            label: 'تعداد دانش‌آموزان',
+            data: DIST_DATA,
+            backgroundColor: 'rgba(99,102,241,0.7)',
+            borderColor: '#6366f1',
+            borderWidth: 1,
+            borderRadius: 6,
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+            y: { beginAtZero: true, ticks: { stepSize: 1 } },
+            x: { ticks: { font: { family: 'Vazirmatn' } } }
+        }
+    }
+});
+
+// Pass/fail doughnut
+new Chart(document.getElementById('passChart'), {
+    type: 'doughnut',
+    data: {
+        labels: ['قبول', 'مردود'],
+        datasets: [{
+            data: [PASS_COUNT, FAIL_COUNT],
+            backgroundColor: ['rgba(16,185,129,0.8)', 'rgba(239,68,68,0.8)'],
+            borderWidth: 0,
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: {
+            legend: { position: 'bottom', labels: { font: { family: 'Vazirmatn', size: 13 } } }
+        }
+    }
+});
 
 function showDetail(rid) {
     const r = RESULTS.find(x => x.id === rid);

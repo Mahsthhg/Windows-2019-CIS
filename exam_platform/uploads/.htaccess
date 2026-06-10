@@ -1,0 +1,8 @@
+# Block direct PHP execution in uploads
+<FilesMatch "\.php$">
+    Order deny,allow
+    Deny from all
+</FilesMatch>
+
+# Only allow image access through the web
+Options -Indexes

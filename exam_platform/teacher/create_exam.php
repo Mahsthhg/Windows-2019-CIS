@@ -47,6 +47,11 @@ if (isset($_POST['save_settings'])) {
                 'pass_threshold'    => validateInt($_POST['pass_threshold'] ?? 0, 0, 100) ?? 0,
                 'max_attempts'      => validateInt($_POST['max_attempts'] ?? 1, 1, 99) ?? 1,
                 'require_fullscreen'=> (int)(bool)($_POST['require_fullscreen'] ?? 1),
+                'require_camera'    => (int)(bool)($_POST['require_camera'] ?? 0),
+                'gps_required'      => (int)(bool)($_POST['gps_required'] ?? 0),
+                'gps_lat'           => ($_POST['gps_lat'] ?? '') !== '' ? (float)$_POST['gps_lat'] : null,
+                'gps_lng'           => ($_POST['gps_lng'] ?? '') !== '' ? (float)$_POST['gps_lng'] : null,
+                'gps_radius'        => validateInt($_POST['gps_radius'] ?? 500, 10, 10000) ?? 500,
                 'password'          => sanitizeString($_POST['exam_password'] ?? '', 100) ?: null,
             ];
             $set = implode(', ', array_map(fn($k) => "`$k`=?", array_keys($fields)));
@@ -633,6 +638,35 @@ $questionTypes = [
                     <div><div class="setting-label">اجبار به تمام‌صفحه</div><div class="setting-sub">خروج = تقلب</div></div>
                     <label class="toggle"><input type="checkbox" name="require_fullscreen" value="1" <?= $editForm['require_fullscreen'] ? 'checked' : '' ?>><span class="toggle-slider"></span></label>
                 </div>
+                <div class="setting-row" style="margin-top:16px;">
+                    <div>
+                        <div class="setting-label">📷 آنتی‌چیت وب‌کم</div>
+                        <div class="setting-sub">درخواست دوربین از دانش‌آموزان — اسنپشات خودکار</div>
+                    </div>
+                    <label class="toggle"><input type="checkbox" name="require_camera" value="1" <?= ($editForm['require_camera'] ?? 0) ? 'checked' : '' ?> id="toggleCamera" onchange="toggleCameraSettings()"><span class="toggle-slider"></span></label>
+                </div>
+                <div class="setting-row" style="margin-top:16px;">
+                    <div>
+                        <div class="setting-label">📍 آنتی‌چیت GPS</div>
+                        <div class="setting-sub">تشخیص دانش‌آموزان کنار هم — خوشه‌بندی تقلب</div>
+                    </div>
+                    <label class="toggle"><input type="checkbox" name="gps_required" value="1" <?= ($editForm['gps_required'] ?? 0) ? 'checked' : '' ?> id="toggleGps" onchange="toggleGpsSettings()"><span class="toggle-slider"></span></label>
+                </div>
+                <div id="gpsSettings" style="<?= ($editForm['gps_required'] ?? 0) ? '' : 'display:none' ?>;background:#f8fafc;border-radius:12px;padding:16px;margin-top:12px;">
+                    <div class="form-group">
+                        <label>مرکز آزمون (عرض جغرافیایی)</label>
+                        <input class="form-control" type="number" step="any" name="gps_lat" placeholder="مثال: 35.6892" value="<?= $editForm['gps_lat'] ?? '' ?>">
+                    </div>
+                    <div class="form-group">
+                        <label>مرکز آزمون (طول جغرافیایی)</label>
+                        <input class="form-control" type="number" step="any" name="gps_lng" placeholder="مثال: 51.3890" value="<?= $editForm['gps_lng'] ?? '' ?>">
+                    </div>
+                    <div class="form-group">
+                        <label>شعاع مجاز (متر) — 500 پیش‌فرض</label>
+                        <input class="form-control" type="number" name="gps_radius" value="<?= $editForm['gps_radius'] ?? 500 ?>" min="10" max="10000">
+                    </div>
+                    <p style="font-size:12px;color:#64748b;">💡 می‌توانید مختصات را از Google Maps دریافت کنید. اگر خالی بگذارید فقط تقلب گروهی (کنار هم) بررسی می‌شود.</p>
+                </div>
                 <div class="form-group" style="margin-top:16px;">
                     <label>حداکثر تلاش مجاز</label>
                     <input class="form-control" type="number" name="max_attempts" value="<?= $editForm['max_attempts'] ?>" min="1" max="99">
@@ -641,6 +675,14 @@ $questionTypes = [
                     <label>رمز عبور آزمون (اختیاری)</label>
                     <input class="form-control" type="password" name="exam_password" placeholder="خالی = بدون رمز" value="<?= $editForm['password'] ? '••••••' : '' ?>">
                 </div>
+                <!-- QR Code -->
+                <?php if ($editForm['exam_link']): ?>
+                <div style="margin-top:16px;text-align:center;">
+                    <div style="font-size:13px;font-weight:700;margin-bottom:8px;color:#0f172a;">🔗 QR Code لینک آزمون</div>
+                    <div id="qrcode" style="display:inline-block;background:white;padding:12px;border-radius:12px;border:2px solid #e2e8f0;"></div>
+                    <div style="font-size:11px;color:#64748b;margin-top:8px;word-break:break-all;"><?= h($_SERVER['HTTP_HOST'] . '/exam_platform/exam/' . $editForm['exam_link']) ?></div>
+                </div>
+                <?php endif; ?>
             </div>
 
             <!-- Scoring -->
@@ -685,6 +727,27 @@ $questionTypes = [
 const FORM_ID = <?= $editId ?>;
 let editingQid = 0;
 let currentType = '';
+
+function toggleGpsSettings() {
+    const el = document.getElementById('gpsSettings');
+    if (el) el.style.display = document.getElementById('toggleGps')?.checked ? 'block' : 'none';
+}
+function toggleCameraSettings() { /* placeholder for future per-exam camera settings */ }
+
+// QR Code (pure JS - no external lib)
+<?php if ($editForm['exam_link'] ?? ''): ?>
+(function(){
+    const url = window.location.protocol + '//' + window.location.host + '/exam_platform/exam/<?= h($editForm['exam_link']) ?>';
+    const container = document.getElementById('qrcode');
+    if (!container) return;
+    // Use qrserver.com API (free, no login required)
+    const img = document.createElement('img');
+    img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + encodeURIComponent(url);
+    img.alt = 'QR Code';
+    img.style.borderRadius = '8px';
+    container.appendChild(img);
+})();
+<?php endif; ?>
 
 const typeNames = <?= json_encode(array_map(fn($t) => $t['label'], $questionTypes), JSON_UNESCAPED_UNICODE) ?>;
 const typesWithOptions = ['multiple_choice','multi_select','dropdown'];

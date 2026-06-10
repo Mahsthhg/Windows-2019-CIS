@@ -101,9 +101,19 @@ if ($form['shuffle_options']) {
     unset($q);
 }
 
+// بررسی IP در لیست سیاه
+$clientIP = getClientIP();
+$stmt = $pdo->prepare("SELECT id FROM ip_blacklist WHERE ip_address=? AND is_active=1 AND (expires_at IS NULL OR expires_at > NOW())");
+$stmt->execute([$clientIP]);
+if ($stmt->fetch()) die(renderError('دسترسی شما مسدود شده است. با مدیر تماس بگیرید.'));
+
 // محاسبه حداکثر امتیاز
 $maxScore = 0;
 foreach ($questions as $q) $maxScore += (float)$q['points'];
+
+// دریافت نام دانش‌آموز (از session اگر موجود)
+$studentName = $_SESSION['exam_student_name_' . $fid] ?? '';
+$answerId    = $_SESSION['exam_answer_id_' . $fid] ?? null;
 
 // شروع آزمون (ثبت رکورد)
 if (!isset($_SESSION['exam_start_' . $fid])) {
@@ -361,6 +371,55 @@ textarea.q-input{min-height:120px;resize:vertical;}
 .confirm-stat strong{font-size:24px;font-weight:800;display:block;}
 .confirm-stat span{font-size:11px;color:#64748b;}
 
+/* ── Webcam ── */
+#cameraPanel{
+    position:fixed;bottom:80px;left:20px;
+    background:rgba(15,23,42,.95);
+    border-radius:16px;padding:12px;
+    z-index:600;display:none;
+    border:2px solid rgba(99,102,241,.5);
+}
+#cameraPanel.show{display:block;}
+#camPreview{width:180px;height:135px;border-radius:12px;object-fit:cover;background:#1e293b;display:block;}
+#camStatus{font-size:10px;color:#94a3b8;margin-top:6px;text-align:center;}
+#camRequestAlert{
+    position:fixed;top:80px;left:50%;transform:translateX(-50%);
+    background:linear-gradient(135deg,#6366f1,#8b5cf6);
+    color:white;border-radius:20px;padding:16px 24px;
+    z-index:700;display:none;text-align:center;
+    box-shadow:0 8px 24px rgba(99,102,241,.4);
+    animation:slideDown .4s ease;
+}
+#camRequestAlert.show{display:block;}
+#camRequestAlert strong{display:block;font-size:16px;font-weight:800;margin-bottom:6px;}
+#camRequestAlert p{font-size:13px;opacity:.9;}
+
+/* ── GPS Status ── */
+#gpsIndicator{
+    position:fixed;bottom:80px;right:20px;
+    background:rgba(15,23,42,.9);
+    border-radius:12px;padding:8px 14px;
+    z-index:600;font-size:12px;color:white;
+    display:flex;align-items:center;gap:8px;
+}
+#gpsDot{width:8px;height:8px;border-radius:50%;background:#94a3b8;}
+#gpsDot.ok{background:#10b981;}
+#gpsDot.warn{background:#f59e0b;}
+#gpsDot.err{background:#ef4444;}
+
+/* ── Watermark ── */
+.watermark{
+    position:fixed;top:50%;left:50%;
+    transform:translate(-50%,-50%) rotate(-30deg);
+    font-size:clamp(14px,3vw,24px);
+    font-weight:800;color:rgba(99,102,241,.06);
+    pointer-events:none;z-index:1;
+    white-space:nowrap;user-select:none;
+    letter-spacing:4px;
+}
+/* Hidden canvas for snapshots */
+#snapCanvas{display:none;}
+
 @media(max-width:640px){
     .exam-topbar{padding:10px 16px;}
     .exam-topbar .title{max-width:150px;font-size:13px;}
@@ -371,6 +430,31 @@ textarea.q-input{min-height:120px;resize:vertical;}
 </style>
 </head>
 <body>
+
+<!-- ── Watermark ── -->
+<div class="watermark" id="watermarkEl"><?= h($studentName ?: APP_NAME) ?></div>
+
+<!-- ── Webcam Panel ── -->
+<?php if ($form['require_camera']): ?>
+<div id="cameraPanel">
+    <video id="camPreview" autoplay muted playsinline></video>
+    <div id="camStatus">📷 وب‌کم فعال</div>
+</div>
+<div id="camRequestAlert">
+    <strong>📷 درخواست تصویر</strong>
+    <p>ادمین یک تصویر از شما درخواست کرده است</p>
+</div>
+<?php endif; ?>
+
+<!-- ── GPS Indicator ── -->
+<?php if ($form['gps_required']): ?>
+<div id="gpsIndicator">
+    <div id="gpsDot"></div>
+    <span id="gpsText">GPS: در حال اتصال...</span>
+</div>
+<?php endif; ?>
+
+<canvas id="snapCanvas"></canvas>
 
 <!-- ── Anti-Cheat Overlay ── -->
 <div id="cheatOverlay">
@@ -570,6 +654,10 @@ const TOTAL_Q       = <?= $qNum ?>;
 const ALLOW_BACK    = <?= $form['allow_back'] ? 'true' : 'false' ?>;
 const ONE_AT_A_TIME = <?= $modeOneAtATime ? 'true' : 'false' ?>;
 const REQ_FULLSCREEN= <?= $form['require_fullscreen'] ? 'true' : 'false' ?>;
+const REQ_CAMERA    = <?= $form['require_camera'] ? 'true' : 'false' ?>;
+const REQ_GPS       = <?= $form['gps_required'] ? 'true' : 'false' ?>;
+const ANSWER_ID     = <?= $answerId ? $answerId : 'null' ?>;
+const STUDENT_NAME  = '<?= h(addslashes($studentName)) ?>';
 
 let currentIdx   = 0;
 let cheatCount   = 0;
@@ -587,6 +675,9 @@ document.addEventListener('DOMContentLoaded', () => {
     startTimer();
     if (REQ_FULLSCREEN) requestFullscreen();
     initAntiCheat();
+    if (REQ_CAMERA)  initCamera();
+    if (REQ_GPS)     initGPS();
+    updateWatermark();
 });
 
 // ══ Navigation ═══════════════════════════════════════════════════
@@ -852,9 +943,193 @@ function autoSave() {
 
 // ══ CSS Selection Disable (Anti-screenshot trick) ═════════════
 document.addEventListener('selectstart', e => {
-    // Allow inside text inputs
     if (!['INPUT','TEXTAREA'].includes(e.target.tagName)) e.preventDefault();
 });
+
+// ══ Watermark ════════════════════════════════════════════════════
+function updateWatermark() {
+    const wm = document.getElementById('watermarkEl');
+    if (!wm) return;
+    const name = STUDENT_NAME || document.getElementById('field_name')?.value || '';
+    if (name) wm.textContent = name;
+    setInterval(() => {
+        const n = document.getElementById('field_name')?.value || STUDENT_NAME;
+        if (n) wm.textContent = n;
+    }, 5000);
+}
+
+// ══ Webcam Anti-Cheat ════════════════════════════════════════════
+let camStream = null;
+let snapInterval = null;
+let camRequestInterval = null;
+
+function initCamera() {
+    const panel = document.getElementById('cameraPanel');
+    const video = document.getElementById('camPreview');
+    const status= document.getElementById('camStatus');
+
+    navigator.mediaDevices.getUserMedia({ video: { width:640, height:480, facingMode:'user' }, audio: false })
+    .then(stream => {
+        camStream = stream;
+        if (video) { video.srcObject = stream; }
+        if (panel) panel.classList.add('show');
+        if (status) status.textContent = '📷 وب‌کم فعال — در حال ضبط';
+
+        // Take exam-start snapshot
+        setTimeout(() => takeSnapshot('exam_start'), 2000);
+
+        // Random snapshots every 90-210 seconds
+        function scheduleNextSnap() {
+            const delay = (90 + Math.floor(Math.random() * 120)) * 1000;
+            snapInterval = setTimeout(() => {
+                takeSnapshot('auto');
+                scheduleNextSnap();
+            }, delay);
+        }
+        scheduleNextSnap();
+
+        // Poll for admin camera requests every 30s
+        camRequestInterval = setInterval(checkCameraRequest, 30000);
+    })
+    .catch(err => {
+        if (panel) panel.style.display = 'none';
+        recordCheat('camera_denied', 'دوربین مسدود: ' + err.name);
+        if (status) status.textContent = '❌ دوربین مسدود';
+    });
+}
+
+function takeSnapshot(trigger = 'auto') {
+    const video  = document.getElementById('camPreview');
+    const canvas = document.getElementById('snapCanvas');
+    if (!video || !canvas || !camStream) return;
+
+    canvas.width  = 320;
+    canvas.height = 240;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, 320, 240);
+    const imageData = canvas.toDataURL('image/jpeg', 0.7);
+
+    fetch('../api/upload_snapshot.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            form_id     : FORM_ID,
+            image       : imageData,
+            trigger     : trigger,
+            student_name: STUDENT_NAME || document.getElementById('field_name')?.value || '',
+            answer_id   : ANSWER_ID
+        })
+    })
+    .then(r => r.json())
+    .then(d => {
+        const status = document.getElementById('camStatus');
+        if (status) {
+            const time = new Date().toLocaleTimeString('fa-IR');
+            status.textContent = d.face_detected ? `✅ چهره شناسایی شد (${time})` : `⚠️ چهره شناسایی نشد (${time})`;
+        }
+        if (d.ok && !d.face_detected && trigger === 'auto') {
+            recordCheat('no_face', 'چهره شناسایی نشد در اسنپشات');
+        }
+    })
+    .catch(() => {});
+}
+
+function checkCameraRequest() {
+    fetch('../api/camera_request.php?form_id=' + FORM_ID)
+    .then(r => r.json())
+    .then(d => {
+        if (d.requested) {
+            const alert = document.getElementById('camRequestAlert');
+            if (alert) {
+                alert.classList.add('show');
+                setTimeout(() => alert.classList.remove('show'), 5000);
+            }
+            takeSnapshot('admin_request');
+        }
+    })
+    .catch(() => {});
+}
+
+// ══ GPS Anti-Cheat ═══════════════════════════════════════════════
+let gpsWatchId = null;
+let lastGpsTime = 0;
+
+function initGPS() {
+    const dot  = document.getElementById('gpsDot');
+    const text = document.getElementById('gpsText');
+
+    if (!navigator.geolocation) {
+        if (dot) dot.className = 'err';
+        if (text) text.textContent = 'GPS: پشتیبانی نمی‌شود';
+        return;
+    }
+
+    if (dot) dot.className = 'warn';
+    if (text) text.textContent = 'GPS: در حال تعیین موقعیت...';
+
+    navigator.geolocation.getCurrentPosition(
+        pos => sendLocation(pos),
+        err => {
+            if (dot) dot.className = 'err';
+            if (text) text.textContent = 'GPS: ' + getGpsError(err);
+            recordCheat('no_face', 'GPS رد شد: ' + err.message);
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+
+    // Re-check every 5 minutes
+    setInterval(() => {
+        const now = Date.now();
+        if (now - lastGpsTime > 4 * 60 * 1000) {
+            navigator.geolocation.getCurrentPosition(sendLocation, () => {}, { enableHighAccuracy: true });
+        }
+    }, 5 * 60 * 1000);
+}
+
+function sendLocation(pos) {
+    lastGpsTime = Date.now();
+    const dot  = document.getElementById('gpsDot');
+    const text = document.getElementById('gpsText');
+
+    fetch('../api/save_location.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            form_id     : FORM_ID,
+            lat         : pos.coords.latitude,
+            lng         : pos.coords.longitude,
+            accuracy    : pos.coords.accuracy,
+            student_name: STUDENT_NAME || document.getElementById('field_name')?.value || '',
+            answer_id   : ANSWER_ID
+        })
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.out_of_bounds) {
+            if (dot) dot.className = 'warn';
+            if (text) text.textContent = 'GPS: خارج از محدوده مجاز';
+            showWarn('⚠️ شما خارج از محدوده مجاز آزمون هستید!');
+        } else if (d.collusion) {
+            if (dot) dot.className = 'err';
+            if (text) text.textContent = `GPS: تقلب گروهی شناسایی شد!`;
+            recordCheat('gps_collusion', 'نزدیکی مکانی با ' + d.suspects + ' نفر دیگر');
+            showWarn('🚨 موقعیت شما با دانش‌آموز دیگری یکسان است — تقلب ثبت شد!');
+        } else {
+            if (dot) dot.className = 'ok';
+            if (text) text.textContent = 'GPS: موقعیت تأیید شد';
+        }
+    })
+    .catch(() => {
+        if (dot) dot.className = 'err';
+    });
+}
+
+function getGpsError(err) {
+    if (err.code === 1) return 'دسترسی رد شد';
+    if (err.code === 2) return 'موقعیت یافت نشد';
+    if (err.code === 3) return 'وقت تمام شد';
+    return 'خطا';
+}
 </script>
 </body>
 </html>
