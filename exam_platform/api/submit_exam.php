@@ -1,0 +1,198 @@
+<?php
+/**
+ * api/submit_exam.php - ثبت نهایی پاسخ‌های آزمون
+ * Fixed: session keys, negative marking, multi-select scoring, proper validation
+ */
+require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/security.php';
+
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405); exit('Method Not Allowed');
+}
+
+requireCsrf();
+
+$fid = validateInt($_POST['form_id'] ?? 0, 1);
+if (!$fid) die(renderError('شناسه فرم نامعتبر'));
+
+// دریافت فرم
+$stmt = $pdo->prepare("SELECT * FROM forms WHERE id=? AND is_active=1");
+$stmt->execute([$fid]);
+$form = $stmt->fetch();
+if (!$form) die(renderError('آزمون یافت نشد'));
+
+$tid = (int)$form['teacher_id'];
+
+// بررسی تعداد تلاش مجاز
+$clientIP = getClientIP();
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM answers WHERE form_id=? AND user_ip=? AND status='completed'");
+$stmt->execute([$fid, $clientIP]);
+$existingAttempts = (int)$stmt->fetchColumn();
+if ($existingAttempts >= $form['max_attempts']) {
+    die(renderError('تعداد تلاش‌های مجاز به پایان رسیده است'));
+}
+
+// دریافت همه سوالات
+$stmt = $pdo->prepare("SELECT * FROM questions WHERE form_id=? ORDER BY order_index");
+$stmt->execute([$fid]);
+$questions = $stmt->fetchAll();
+
+// پردازش پاسخ‌ها
+$answers     = [];
+$user_name   = '';
+$user_national = '';
+$user_phone  = '';
+
+$score       = 0.0;
+$maxScore    = 0.0;
+$correct     = 0;
+$wrong       = 0;
+$empty       = 0;
+
+foreach ($questions as $q) {
+    $qid  = $q['id'];
+    $type = $q['type'];
+    $pts  = (float)$q['points'];
+
+    // Collect answer
+    $rawAnswer = null;
+    if ($type === 'multi_select') {
+        $arr = $_POST['q_' . $qid] ?? [];
+        $rawAnswer = is_array($arr) ? implode(',', array_map('intval', $arr)) : null;
+    } elseif ($type === 'fill_blank') {
+        // Fill blank might have multiple blank inputs
+        $rawAnswer = sanitizeString($_POST['q_' . $qid] ?? '', 500);
+    } else {
+        $rawAnswer = isset($_POST['q_' . $qid]) ? sanitizeString($_POST['q_' . $qid], 5000) : null;
+    }
+
+    $answers[$qid] = $rawAnswer;
+
+    // Extract info fields
+    if ($type === 'name_family')   $user_name     = $rawAnswer ?? '';
+    if ($type === 'national_code') $user_national = $rawAnswer ?? '';
+    if ($type === 'phone')         $user_phone    = $rawAnswer ?? '';
+
+    // Skip non-scoreable types
+    if (in_array($type, ['name_family','national_code','phone','short_text','long_text','section_title','rating'])) continue;
+
+    // Scoring
+    $maxScore += $pts;
+    $correctAns = $q['correct_answer'];
+
+    if ($rawAnswer === null || $rawAnswer === '') {
+        $empty++;
+        // Negative marking for empty: don't subtract
+    } elseif ($type === 'true_false' || $type === 'numeric' || $type === 'fill_blank' || $type === 'multiple_choice' || $type === 'dropdown') {
+        $isCorrect = false;
+        if ($type === 'fill_blank') {
+            // case-insensitive trim comparison
+            $isCorrect = mb_strtolower(trim($rawAnswer)) === mb_strtolower(trim($correctAns ?? ''));
+        } elseif ($type === 'numeric') {
+            $isCorrect = abs((float)$rawAnswer - (float)$correctAns) < 0.0001;
+        } else {
+            $isCorrect = $rawAnswer == $correctAns;
+        }
+        if ($isCorrect) {
+            $score += $pts;
+            $correct++;
+        } else {
+            $score -= (float)$form['negative_marking'];
+            $wrong++;
+        }
+    } elseif ($type === 'multi_select') {
+        // Multi-select: parse correct answers (JSON array)
+        try {
+            $correctArr = json_decode($correctAns, true);
+        } catch(Exception $e) { $correctArr = [$correctAns]; }
+        if (!is_array($correctArr)) $correctArr = [$correctAns];
+        $correctArr  = array_map('strval', $correctArr);
+        sort($correctArr);
+
+        $userArr = $rawAnswer ? explode(',', $rawAnswer) : [];
+        $userArr = array_map('strval', $userArr);
+        sort($userArr);
+
+        if ($userArr === $correctArr) {
+            $score += $pts;
+            $correct++;
+        } else {
+            $score -= (float)$form['negative_marking'];
+            $wrong++;
+        }
+    }
+}
+
+$score = max(0, round($score, 2));
+$maxScore = round($maxScore, 2);
+
+// تقلب از لاگ
+$stmt = $pdo->prepare("SELECT COUNT(*) FROM cheat_logs WHERE form_id=? AND user_ip=? AND created_at > DATE_SUB(NOW(), INTERVAL 2 HOUR)");
+$stmt->execute([$fid, $clientIP]);
+$cheatFromLog = (int)$stmt->fetchColumn();
+$cheatFromPost = (int)($_POST['cheat_count'] ?? 0);
+$totalCheat = max($cheatFromLog, $cheatFromPost);
+
+// زمان صرف شده
+$startTime   = (int)($_POST['start_time'] ?? 0);
+$durationTaken = $startTime > 0 ? min(time() - $startTime, $form['duration'] * 60 + 300) : null;
+
+// browser fingerprint (basic)
+$ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+$fp = substr(hash('sha256', $clientIP . $ua), 0, 16);
+
+// ذخیره در دیتابیس
+$stmt = $pdo->prepare("
+    INSERT INTO answers
+    (form_id, teacher_id, user_ip, user_agent, browser_fp,
+     user_name, user_national, user_phone,
+     answers, time_per_question,
+     score, max_score, correct_count, wrong_count, empty_count, cheat_count,
+     attempt_number, status, submitted_at, duration_taken)
+    VALUES (?,?,?,?,?, ?,?,?, ?,?, ?,?,?,?,?,?, ?,   'completed', NOW(), ?)
+");
+$stmt->execute([
+    $fid, $tid, $clientIP, substr($ua, 0, 500), $fp,
+    $user_name, $user_national, $user_phone,
+    json_encode($answers, JSON_UNESCAPED_UNICODE),
+    sanitizeString($_POST['time_per_question'] ?? '{}', 2000),
+    $score, $maxScore, $correct, $wrong, $empty, $totalCheat,
+    $existingAttempts + 1,
+    $durationTaken
+]);
+
+$answerId = (int)$pdo->lastInsertId();
+
+// تمیز کردن session
+unset(
+    $_SESSION['exam_start_' . $fid],
+    $_SESSION['exam_order_' . $fid],
+    $_SESSION['exam_auth_'  . $fid]
+);
+// تمیز کردن opt_orders
+foreach ($questions as $q) unset($_SESSION['opt_order_' . $q['id']]);
+
+// ذخیره نتیجه در session برای صفحه result
+$_SESSION['exam_result'] = [
+    'answer_id'  => $answerId,
+    'score'      => $score,
+    'max_score'  => $maxScore,
+    'correct'    => $correct,
+    'wrong'      => $wrong,
+    'empty'      => $empty,
+    'cheat'      => $totalCheat,
+    'form_title' => $form['title'],
+    'show_results'=> $form['show_results'],
+    'pass_threshold' => $form['pass_threshold'],
+    'total_q'    => count(array_filter($questions, fn($q) => $q['type'] !== 'section_title')),
+];
+
+header('Location: ../exam/result.php');
+exit();
+
+function renderError(string $msg): never {
+    echo '<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>خطا</title></head>
+    <body style="font-family:sans-serif;text-align:center;padding:60px;background:#0f172a;color:white;">
+    <h2>⚠️ ' . htmlspecialchars($msg) . '</h2></body></html>';
+    exit();
+}

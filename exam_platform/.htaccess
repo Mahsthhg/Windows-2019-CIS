@@ -1,0 +1,44 @@
+Options -Indexes
+Options -ExecCGI
+
+# Security Headers
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set X-XSS-Protection "1; mode=block"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"
+</IfModule>
+
+# Block direct access to config files
+<FilesMatch "\.(env|sql|log|ini|md|json|lock|sh)$">
+    Order deny,allow
+    Deny from all
+</FilesMatch>
+
+# Protect config directory
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^config/ - [F,L]
+    RewriteRule ^\.htaccess - [F,L]
+</IfModule>
+
+# URL rewriting for exam links
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /exam_platform/
+    # Exam URL: /exam/exam_XXXX -> /exam/index.php?slug=exam_XXXX
+    RewriteRule ^exam/([a-z0-9_]+)/?$ exam/index.php?slug=$1 [L,QSA]
+    # Attendance: /att/XXXXXXXX -> /attendance.php?link=XXXXXXXX
+    RewriteRule ^att/([a-z0-9_]+)/?$ attendance.php?link=$1 [L,QSA]
+</IfModule>
+
+# PHP Settings
+<IfModule mod_php.c>
+    php_flag expose_php Off
+    php_flag display_errors Off
+    php_flag log_errors On
+    php_value session.cookie_httponly 1
+    php_value session.cookie_samesite Strict
+    php_value session.use_strict_mode 1
+</IfModule>
