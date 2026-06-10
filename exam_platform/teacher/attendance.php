@@ -308,7 +308,7 @@ function closeActivate() { document.getElementById('activateModal').classList.re
 
 function showLink(link) {
     const host = window.location.origin;
-    const url  = host + '/attendance.php?link=' + link;
+    const url  = host + '/exam_platform/attendance.php?link=' + link;
     document.getElementById('attLinkDisplay').textContent = url;
     document.getElementById('linkModal').classList.add('open');
 }

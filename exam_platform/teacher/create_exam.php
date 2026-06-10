@@ -406,7 +406,7 @@ $questionTypes = [
                 </div>
                 <?php if ($f['is_active'] && $f['exam_link']): ?>
                 <div class="exam-link-box">
-                    <div class="exam-link-url" id="link_<?= $f['id'] ?>"><?= htmlspecialchars($_SERVER['HTTP_HOST'] ?? 'yoursite.com') ?>/exam/<?= h($f['exam_link']) ?></div>
+                    <div class="exam-link-url" id="link_<?= $f['id'] ?>"><?= htmlspecialchars(($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost') . '/exam_platform/exam/' . $f['exam_link']) ?></div>
                     <button class="copy-btn" onclick="copyLink(<?= $f['id'] ?>)">📋 کپی لینک</button>
                 </div>
                 <?php endif; ?>
@@ -571,7 +571,7 @@ $questionTypes = [
             <div class="card-body">
                 <strong>🔗 لینک آزمون:</strong>
                 <div class="exam-link-box" style="margin-top:12px;">
-                    <div class="exam-link-url" id="editExamLink"><?= htmlspecialchars(($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost') . '/exam/' . $editForm['exam_link']) ?></div>
+                    <div class="exam-link-url" id="editExamLink"><?= htmlspecialchars(($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost') . '/exam_platform/exam/' . $editForm['exam_link']) ?></div>
                     <button class="copy-btn" onclick="copyText('editExamLink')">📋 کپی</button>
                 </div>
             </div>
