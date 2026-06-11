@@ -1,54 +1,63 @@
 <?php
 /**
- * config/ai.php — دستیار هوش مصنوعی پشتیبانی
+ * config/ai.php — دستیار هوش مصنوعی (DeepSeek)
  *
- * اتصال به سرویس هوش مصنوعی با cURL (بدون نیاز به Composer/SDK).
- * پیش‌فرض روی Claude (Anthropic Messages API) تنظیم شده، ولی آدرس/کلید/مدل
- * از طریق متغیرهای محیطی قابل تغییر است تا با هر درگاه سازگار باشد.
+ * اتصال با cURL به API دیپ‌سیک (سازگار با OpenAI). بدون نیاز به Composer/SDK.
  *
- * تنظیم (در XAMPP می‌توانید این مقادیر را اینجا مستقیم بگذارید):
- *   AI_API_KEY   کلید سرویس
- *   AI_BASE_URL  آدرس endpoint (پیش‌فرض: Anthropic)
- *   AI_MODEL     نام مدل (پیش‌فرض: claude-opus-4-8)
+ * تنظیم کلید (یکی از روش‌ها):
+ *   - متغیر محیطی: AI_API_KEY=...  یا  DEEPSEEK_API_KEY=...
+ *   - یا مستقیم در همین فایل، مقدار '' را با کلید خود جایگزین کنید.
+ *
+ * اختیاری:
+ *   AI_BASE_URL  پیش‌فرض: https://api.deepseek.com/chat/completions
+ *   AI_MODEL     پیش‌فرض: deepseek-chat   (یا deepseek-reasoner)
  */
 
 if (!defined('DB_HOST')) {
     require_once __DIR__ . '/database.php';
 }
 
-define('AI_API_KEY',  getenv('AI_API_KEY')  ?: (getenv('ANTHROPIC_API_KEY') ?: ''));
-define('AI_BASE_URL', getenv('AI_BASE_URL') ?: 'https://api.anthropic.com/v1/messages');
-define('AI_MODEL',    getenv('AI_MODEL')    ?: 'claude-opus-4-8');
+// 👇 اگر متغیر محیطی نداری، کلید دیپ‌سیک را مستقیم بین '' بگذار:  '' → 'sk-...'
+define('AI_API_KEY',  getenv('AI_API_KEY') ?: (getenv('DEEPSEEK_API_KEY') ?: ''));
+define('AI_BASE_URL', getenv('AI_BASE_URL') ?: 'https://api.deepseek.com/chat/completions');
+define('AI_MODEL',    getenv('AI_MODEL')    ?: 'deepseek-chat');
 define('AI_ENABLED',  AI_API_KEY !== '');
 
-// اجازهٔ نوشتن فایل توسط دستیار ادمین — برای امنیت پیش‌فرض خاموش است.
-// فقط در محیط توسعه و با آگاهی کامل روشن کنید (getenv('AI_ALLOW_FILE_WRITE')=1).
+// اجازهٔ نوشتن فایل توسط فیکسر ادمین — برای امنیت پیش‌فرض خاموش است.
 define('AI_ALLOW_FILE_WRITE', getenv('AI_ALLOW_FILE_WRITE') === '1');
 
 /**
- * فراخوانی سرویس هوش مصنوعی (Anthropic Messages API).
- * $messages: آرایه‌ای از ['role'=>'user'|'assistant','content'=>'...']
+ * فراخوانی سرویس هوش مصنوعی دیپ‌سیک (سازگار با OpenAI Chat Completions).
+ * @param array  $messages  [['role'=>'user'|'assistant','content'=>'...'], ...]
+ * @param string $system    دستور سیستمی
+ * @param int    $maxTokens سقف توکن خروجی
+ * @param bool   $jsonMode  اگر true، خروجی JSON معتبر اجبار می‌شود
  */
-function aiChat(array $messages, string $system, int $maxTokens = 1500): array {
+function aiChat(array $messages, string $system, int $maxTokens = 1500, bool $jsonMode = false): array {
     if (!AI_ENABLED) {
-        return ['ok' => false, 'error' => 'سرویس هوش مصنوعی پیکربندی نشده است. کلید AI_API_KEY را در config/ai.php تنظیم کنید.'];
+        return ['ok' => false, 'error' => 'سرویس هوش مصنوعی پیکربندی نشده است. کلید دیپ‌سیک را در config/ai.php تنظیم کنید.'];
     }
+
+    $allMsgs = array_merge([['role' => 'system', 'content' => $system]], array_values($messages));
     $payload = [
-        'model'      => AI_MODEL,
-        'max_tokens' => $maxTokens,
-        'system'     => $system,
-        'messages'   => array_values($messages),
+        'model'       => AI_MODEL,
+        'messages'    => $allMsgs,
+        'max_tokens'  => $maxTokens,
+        'temperature' => $jsonMode ? 0.3 : 0.6,
+        'stream'      => false,
     ];
+    if ($jsonMode) {
+        $payload['response_format'] = ['type' => 'json_object'];
+    }
 
     $ch = curl_init(AI_BASE_URL);
     curl_setopt_array($ch, [
         CURLOPT_POST           => true,
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 90,
+        CURLOPT_TIMEOUT        => 120,
         CURLOPT_HTTPHEADER     => [
             'Content-Type: application/json',
-            'x-api-key: ' . AI_API_KEY,
-            'anthropic-version: 2023-06-01',
+            'Authorization: Bearer ' . AI_API_KEY,
         ],
         CURLOPT_POSTFIELDS     => json_encode($payload, JSON_UNESCAPED_UNICODE),
     ]);
@@ -65,31 +74,25 @@ function aiChat(array $messages, string $system, int $maxTokens = 1500): array {
         $msg = $data['error']['message'] ?? ('کد خطا: ' . $code);
         return ['ok' => false, 'error' => 'سرویس هوش مصنوعی: ' . $msg];
     }
-    $text = '';
-    foreach (($data['content'] ?? []) as $block) {
-        if (($block['type'] ?? '') === 'text') $text .= $block['text'];
+    $text = $data['choices'][0]['message']['content'] ?? '';
+    if ($text === '') {
+        return ['ok' => false, 'error' => 'پاسخی از سرویس دریافت نشد'];
     }
     return ['ok' => true, 'text' => trim($text)];
 }
 
 /**
- * مسیر امن فایل پروژه برای دستیار ادمین.
- * فقط داخل پوشهٔ پروژه، فقط پسوندهای مجاز، و خارج از پوشهٔ config (جلوگیری از نشت اطلاعات حساس).
- * در صورت نامعتبر بودن، null برمی‌گرداند.
+ * مسیر امن فایل پروژه برای فیکسر ادمین.
+ * فقط داخل پوشهٔ پروژه، پسوندهای مجاز، و خارج از پوشهٔ config (جلوگیری از نشت کلید/رمز).
  */
 function aiSafeProjectPath(string $rel): ?string {
     $base = realpath(__DIR__ . '/..');
     if ($base === false) return null;
 
-    $rel = str_replace('\\', '/', $rel);
-    $rel = ltrim($rel, '/');
+    $rel  = ltrim(str_replace('\\', '/', $rel), '/');
     $full = realpath($base . '/' . $rel);
     if ($full === false) return null;
-
-    // باید واقعاً داخل پوشهٔ پروژه باشد
     if (strpos($full, $base . DIRECTORY_SEPARATOR) !== 0) return null;
-
-    // پوشهٔ config حاوی کلید/رمز است — هرگز ارسال/بازنویسی نشود
     if (strpos($full, $base . DIRECTORY_SEPARATOR . 'config') === 0) return null;
 
     $ext = strtolower(pathinfo($full, PATHINFO_EXTENSION));
@@ -97,6 +100,5 @@ function aiSafeProjectPath(string $rel): ?string {
         && basename($full) !== '.htaccess') {
         return null;
     }
-    if (!is_file($full)) return null;
-    return $full;
+    return is_file($full) ? $full : null;
 }

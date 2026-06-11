@@ -453,6 +453,7 @@ $questionTypes = [
         <p><?= count($questions) ?> سوال | <?= $editForm['duration'] ?> دقیقه | <?= $editForm['is_active'] ? '✅ فعال' : '⏳ پیش‌نویس' ?></p>
     </div>
     <div class="header-actions">
+        <button type="button" class="btn btn-primary" onclick="aiQGenOpen()">🤖 ساخت سوال با هوش مصنوعی</button>
         <?php if (!$editForm['is_active']): ?>
         <a href="?activate=<?= $editId ?>" class="btn btn-success" onclick="return confirm('آزمون فعال شود؟')">🚀 فعال‌سازی</a>
         <?php else: ?>
@@ -465,6 +466,65 @@ $questionTypes = [
         <a href="create_exam.php" class="btn btn-secondary">← بازگشت</a>
     </div>
 </div>
+
+<!-- ── پنجرهٔ سوال‌ساز هوش مصنوعی ── -->
+<div class="modal-overlay" id="aiQGenModal">
+  <div class="modal" style="max-width:480px;">
+    <div class="modal-header">
+      <h3>🤖 ساخت سوال با هوش مصنوعی</h3>
+      <button class="modal-close" onclick="aiQGenClose()">×</button>
+    </div>
+    <div class="form-group">
+      <label>موضوع / مبحث</label>
+      <textarea class="form-control" id="aiQTopic" rows="2" placeholder="مثال: ضرب و تقسیم اعداد اعشاری پایهٔ ششم"></textarea>
+    </div>
+    <div class="grid-2col" style="gap:14px;">
+      <div class="form-group">
+        <label>نوع سوال</label>
+        <select class="form-control" id="aiQType">
+          <option value="multiple_choice">چندگزینه‌ای</option>
+          <option value="true_false">صحیح / غلط</option>
+          <option value="short_text">تشریحی کوتاه</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>تعداد</label>
+        <input class="form-control" type="number" id="aiQCount" value="5" min="1" max="15">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>سطح دشواری</label>
+      <select class="form-control" id="aiQLevel">
+        <option>آسان</option><option selected>متوسط</option><option>دشوار</option>
+      </select>
+    </div>
+    <div id="aiQStatus" style="font-size:13px;margin-bottom:10px;"></div>
+    <button class="btn btn-primary btn-lg" style="width:100%;" id="aiQGenBtn" onclick="aiQGenerate()">✨ بساز و اضافه کن</button>
+    <p style="font-size:11px;color:var(--text-muted);margin-top:10px;text-align:center;">سوالات ساخته‌شده به انتهای همین آزمون اضافه می‌شوند و قابل ویرایش‌اند.</p>
+  </div>
+</div>
+<script>
+function aiQGenOpen(){ document.getElementById('aiQGenModal').classList.add('open'); }
+function aiQGenClose(){ document.getElementById('aiQGenModal').classList.remove('open'); }
+async function aiQGenerate(){
+  const topic=document.getElementById('aiQTopic').value.trim();
+  const st=document.getElementById('aiQStatus');
+  const btn=document.getElementById('aiQGenBtn');
+  if(!topic){ st.style.color='#dc2626'; st.textContent='موضوع را وارد کنید'; return; }
+  btn.disabled=true; st.style.color='#6366f1'; st.textContent='⏳ در حال ساخت سوال... (چند لحظه صبر کنید)';
+  try{
+    const r=await fetch('../api/ai_assist.php',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'generate_questions',csrf_token:'<?= h($csrf) ?>',
+        form_id:<?= $editId ?>, topic:topic,
+        qtype:document.getElementById('aiQType').value,
+        count:parseInt(document.getElementById('aiQCount').value)||5,
+        difficulty:document.getElementById('aiQLevel').value})});
+    const d=await r.json();
+    if(d.ok){ st.style.color='#10b981'; st.textContent='✅ '+(d.msg||'انجام شد')+' — در حال بارگذاری...'; setTimeout(()=>location.href='?edit=<?= $editId ?>',900); }
+    else { st.style.color='#dc2626'; st.textContent='❌ '+(d.error||'خطا'); btn.disabled=false; }
+  }catch(e){ st.style.color='#dc2626'; st.textContent='❌ خطای شبکه'; btn.disabled=false; }
+}
+</script>
 
 <div class="builder-layout">
 
