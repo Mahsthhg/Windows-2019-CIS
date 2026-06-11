@@ -256,7 +256,7 @@ $_SESSION['exam_result'] = [
 header('Location: ../exam/result.php');
 exit();
 
-function renderError(string $msg): never {
+function renderError(string $msg): void {
     echo '<!DOCTYPE html><html dir="rtl"><head><meta charset="UTF-8"><title>خطا</title></head>
     <body style="font-family:sans-serif;text-align:center;padding:60px;background:#0f172a;color:white;">
     <h2>⚠️ ' . htmlspecialchars($msg) . '</h2></body></html>';

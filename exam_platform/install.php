@@ -396,7 +396,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // تنظیمات پیش‌فرض
             $settings = [
-                ['site_name', APP_NAME ?? 'سامانه آزمون آنلاین'],
+                ['site_name', 'سامانه آزمون آنلاین'],
                 ['installed_at', date('Y-m-d H:i:s')],
                 ['version', '2.0.0'],
             ];
