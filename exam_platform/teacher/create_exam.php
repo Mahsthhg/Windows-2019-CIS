@@ -76,20 +76,23 @@ if (isset($_GET['activate'])) {
     redirect('create_exam.php');
 }
 
-if (isset($_GET['deactivate'])) {
-    $fid = validateInt($_GET['deactivate'], 1);
+if (isset($_POST['deactivate'])) {
+    requireCsrf();
+    $fid = validateInt($_POST['deactivate'], 1);
     if ($fid) $pdo->prepare("UPDATE forms SET is_active=0 WHERE id=? AND teacher_id=?")->execute([$fid, $tid]);
     redirect('create_exam.php');
 }
 
-if (isset($_GET['delete_form'])) {
-    $fid = validateInt($_GET['delete_form'], 1);
+if (isset($_POST['delete_form'])) {
+    requireCsrf();
+    $fid = validateInt($_POST['delete_form'], 1);
     if ($fid) $pdo->prepare("DELETE FROM forms WHERE id=? AND teacher_id=?")->execute([$fid, $tid]);
     redirect('create_exam.php');
 }
 
-if (isset($_GET['duplicate'])) {
-    $fid = validateInt($_GET['duplicate'], 1);
+if (isset($_POST['duplicate'])) {
+    requireCsrf();
+    $fid = validateInt($_POST['duplicate'], 1);
     if ($fid) {
         $s = $pdo->prepare("SELECT * FROM forms WHERE id=? AND teacher_id=?");
         $s->execute([$fid, $tid]);
@@ -113,9 +116,10 @@ if (isset($_GET['duplicate'])) {
 }
 
 // ── حذف سوال ────────────────────────────────────────────────────
-if (isset($_GET['delete_q'])) {
-    $qid = validateInt($_GET['delete_q'], 1);
-    $fid = validateInt($_GET['form_id'], 1);
+if (isset($_POST['delete_q'])) {
+    requireCsrf();
+    $qid = validateInt($_POST['delete_q'], 1);
+    $fid = validateInt($_POST['form_id'] ?? 0, 1);
     if ($qid && $fid) {
         $pdo->prepare("DELETE FROM questions WHERE id=? AND form_id IN (SELECT id FROM forms WHERE teacher_id=?)")
             ->execute([$qid, $tid]);
@@ -411,11 +415,23 @@ $questionTypes = [
                     <?php if (!$f['is_active']): ?>
                     <a href="?activate=<?= $f['id'] ?>" class="btn btn-success btn-sm" onclick="return confirm('آزمون فعال شود؟')">🚀 فعال</a>
                     <?php else: ?>
-                    <a href="?deactivate=<?= $f['id'] ?>" class="btn btn-warning btn-sm" onclick="return confirm('غیرفعال شود؟')">⛔</a>
+                    <form method="POST" style="display:inline;" onsubmit="return confirm('غیرفعال شود؟')">
+                        <input type="hidden" name="csrf_token" value="<?= h($csrf) ?>">
+                        <input type="hidden" name="deactivate" value="<?= $f['id'] ?>">
+                        <button type="submit" class="btn btn-warning btn-sm">⛔</button>
+                    </form>
                     <?php endif; ?>
                     <a href="results.php?form=<?= $f['id'] ?>" class="btn btn-secondary btn-sm">📊 نتایج</a>
-                    <a href="?duplicate=<?= $f['id'] ?>" class="btn btn-secondary btn-sm" onclick="return confirm('کپی شود؟')">📋 کپی</a>
-                    <a href="?delete_form=<?= $f['id'] ?>" class="btn btn-danger btn-sm" onclick="return confirm('⚠️ حذف شود؟ پاسخ‌ها هم حذف میشن!')">🗑️</a>
+                    <form method="POST" style="display:inline;" onsubmit="return confirm('کپی شود؟')">
+                        <input type="hidden" name="csrf_token" value="<?= h($csrf) ?>">
+                        <input type="hidden" name="duplicate" value="<?= $f['id'] ?>">
+                        <button type="submit" class="btn btn-secondary btn-sm">📋 کپی</button>
+                    </form>
+                    <form method="POST" style="display:inline;" onsubmit="return confirm('⚠️ حذف شود؟ پاسخ‌ها هم حذف میشن!')">
+                        <input type="hidden" name="csrf_token" value="<?= h($csrf) ?>">
+                        <input type="hidden" name="delete_form" value="<?= $f['id'] ?>">
+                        <button type="submit" class="btn btn-danger btn-sm">🗑️</button>
+                    </form>
                 </div>
             </div>
             <?php endforeach; ?>
@@ -440,7 +456,11 @@ $questionTypes = [
         <?php if (!$editForm['is_active']): ?>
         <a href="?activate=<?= $editId ?>" class="btn btn-success" onclick="return confirm('آزمون فعال شود؟')">🚀 فعال‌سازی</a>
         <?php else: ?>
-        <a href="?deactivate=<?= $editId ?>" class="btn btn-warning">⛔ غیرفعال</a>
+        <form method="POST" style="display:inline;" onsubmit="return confirm('غیرفعال شود؟')">
+            <input type="hidden" name="csrf_token" value="<?= h($csrf) ?>">
+            <input type="hidden" name="deactivate" value="<?= $editId ?>">
+            <button type="submit" class="btn btn-warning">⛔ غیرفعال</button>
+        </form>
         <?php endif; ?>
         <a href="create_exam.php" class="btn btn-secondary">← بازگشت</a>
     </div>
@@ -524,7 +544,12 @@ $questionTypes = [
                         </div>
                         <div class="q-actions">
                             <button class="btn btn-secondary btn-sm" onclick='openEditModal(<?= $q["id"] ?>, <?= h(json_encode($q, JSON_UNESCAPED_UNICODE)) ?>)'>✏️</button>
-                            <a href="?delete_q=<?= $q['id'] ?>&form_id=<?= $editId ?>" class="btn btn-danger btn-sm" onclick="return confirm('حذف شود؟')">🗑️</a>
+                            <form method="POST" style="display:inline;" onsubmit="return confirm('این سوال حذف شود؟')">
+                                <input type="hidden" name="csrf_token" value="<?= h($csrf) ?>">
+                                <input type="hidden" name="form_id" value="<?= $editId ?>">
+                                <input type="hidden" name="delete_q" value="<?= $q['id'] ?>">
+                                <button type="submit" class="btn btn-danger btn-sm">🗑️</button>
+                            </form>
                         </div>
                     </div>
 

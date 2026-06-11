@@ -23,8 +23,19 @@ if (!$form) die(renderError('آزمون یافت نشد'));
 
 $tid = (int)$form['teacher_id'];
 
-// بررسی تعداد تلاش مجاز
 $clientIP = getClientIP();
+
+// IPهای مسدود نباید بتوانند پاسخ ثبت کنند
+if (isIpBlacklisted($pdo, $clientIP)) {
+    die(renderError('دسترسی شما مسدود شده است.'));
+}
+
+// زمان آزمون: اگر آزمون به پایان رسیده، ثبت پذیرفته نشود
+if ($form['end_time'] && strtotime($form['end_time']) + 60 < time()) {
+    die(renderError('زمان آزمون به پایان رسیده است.'));
+}
+
+// بررسی تعداد تلاش مجاز (بر اساس IP)
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM answers WHERE form_id=? AND user_ip=? AND status='completed'");
 $stmt->execute([$fid, $clientIP]);
 $existingAttempts = (int)$stmt->fetchColumn();
@@ -132,6 +143,21 @@ foreach ($questions as $q) {
 
 $score = max(0, round($score, 2));
 $maxScore = round($maxScore, 2);
+
+// ضد دور زدن با VPN/تعویض IP: اگر این کد ملی به تعداد مجاز قبلاً آزمون داده، رد کن
+if ($user_national !== '' && validateNationalCode($user_national)) {
+    $s2 = $pdo->prepare("SELECT COUNT(*) FROM answers WHERE form_id=? AND user_national=? AND status='completed'");
+    $s2->execute([$fid, $user_national]);
+    if ((int)$s2->fetchColumn() >= (int)$form['max_attempts']) {
+        // رکورد در حال انجام را باطل کن تا به‌عنوان آزمون ناتمام نماند
+        $sessAid = (int)($_SESSION['exam_answer_id_' . $fid] ?? 0);
+        if ($sessAid) {
+            $pdo->prepare("UPDATE answers SET status='void' WHERE id=? AND form_id=? AND status='started'")
+                ->execute([$sessAid, $fid]);
+        }
+        die(renderError('با این کد ملی قبلاً در این آزمون شرکت شده است.'));
+    }
+}
 
 // تقلب از لاگ
 $stmt = $pdo->prepare("SELECT COUNT(*) FROM cheat_logs WHERE form_id=? AND user_ip=? AND created_at > DATE_SUB(NOW(), INTERVAL 2 HOUR)");

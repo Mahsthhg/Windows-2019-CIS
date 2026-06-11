@@ -65,17 +65,33 @@ $questions = $stmt->fetchAll();
 
 if (empty($questions)) die(renderError('این آزمون سوالی ندارد'));
 
-// ترتیب تصادفی سوالات
+// ترتیب تصادفی سوالات — فیلدهای اطلاعاتی (نام، کد ملی، تلفن) و عناوین بخش ثابت می‌مانند،
+// فقط سوالات اصلی جابه‌جا می‌شوند
 if ($form['shuffle_questions']) {
-    if (!isset($_SESSION['exam_order_' . $fid])) {
-        $order = range(0, count($questions) - 1);
-        shuffle($order);
-        $_SESSION['exam_order_' . $fid] = $order;
+    $fixedTypes = ['name_family', 'national_code', 'phone', 'section_title'];
+    $shuffleIdx = [];
+    foreach ($questions as $i => $q) {
+        if (!in_array($q['type'], $fixedTypes)) $shuffleIdx[] = $i;
     }
-    $order = $_SESSION['exam_order_' . $fid];
-    $shuffled = [];
-    foreach ($order as $i) $shuffled[] = $questions[$i];
-    $questions = $shuffled;
+    if (count($shuffleIdx) > 1) {
+        if (!isset($_SESSION['exam_order_' . $fid])) {
+            $perm = $shuffleIdx;
+            shuffle($perm);
+            $_SESSION['exam_order_' . $fid] = $perm;
+        }
+        $perm = $_SESSION['exam_order_' . $fid];
+        // اگر تعداد با session نخواند (مثلاً سوال اضافه شده) دوباره بساز
+        if (count($perm) !== count($shuffleIdx)) {
+            $perm = $shuffleIdx;
+            shuffle($perm);
+            $_SESSION['exam_order_' . $fid] = $perm;
+        }
+        $newQuestions = $questions;
+        foreach ($shuffleIdx as $k => $slot) {
+            $newQuestions[$slot] = $questions[$perm[$k]];
+        }
+        $questions = $newQuestions;
+    }
 }
 
 // ترتیب تصادفی گزینه‌ها

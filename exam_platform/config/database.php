@@ -81,10 +81,24 @@ function regenerateSession(): void {
 
 /** Set secure HTTP headers */
 function setSecureHeaders(): void {
+    if (headers_sent()) return;
     header('X-Content-Type-Options: nosniff');
     header('X-Frame-Options: SAMEORIGIN');
     header('X-XSS-Protection: 1; mode=block');
     header('Referrer-Policy: strict-origin-when-cross-origin');
+    header('Permissions-Policy: camera=(self), microphone=(), geolocation=(self)');
+    // Content Security Policy — منابع مجاز محدود (فقط خود سایت + CDNهای لازم)
+    header(
+        "Content-Security-Policy: " .
+        "default-src 'self'; " .
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; " .
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; " .
+        "font-src 'self' https://fonts.gstatic.com data:; " .
+        "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://unpkg.com; " .
+        "connect-src 'self' https://cdn.jsdelivr.net; " .
+        "media-src 'self' blob:; " .
+        "base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'"
+    );
 }
 
 /** JSON response helper */

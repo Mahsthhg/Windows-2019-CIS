@@ -122,3 +122,10 @@ function isAdmin(): bool {
 function isTeacher(): bool {
     return isset($_SESSION['teacher_id']);
 }
+
+/** آیا این IP در لیست سیاه فعال است؟ */
+function isIpBlacklisted(PDO $pdo, string $ip): bool {
+    $stmt = $pdo->prepare("SELECT 1 FROM ip_blacklist WHERE ip_address=? AND is_active=1 AND (expires_at IS NULL OR expires_at > NOW()) LIMIT 1");
+    $stmt->execute([$ip]);
+    return (bool)$stmt->fetchColumn();
+}

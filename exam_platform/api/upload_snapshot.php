@@ -61,6 +61,12 @@ if (strlen($decoded) > 2 * 1024 * 1024) {
     echo json_encode(['ok' => false, 'error' => 'حجم تصویر بیش از حد مجاز است']);
     exit();
 }
+// اطمینان از اینکه داده واقعاً یک تصویر معتبر است (نه فایل جعلی)
+$imgInfo = @getimagesizefromstring($decoded);
+if ($imgInfo === false || empty($imgInfo[0]) || $imgInfo[0] > 4000 || $imgInfo[1] > 4000) {
+    echo json_encode(['ok' => false, 'error' => 'تصویر معتبر نیست']);
+    exit();
+}
 
 // Save to disk
 $dir = __DIR__ . '/../uploads/snapshots/' . $form_id . '/';
