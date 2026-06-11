@@ -163,8 +163,10 @@ body{font-family:'Vazirmatn',sans-serif;background:var(--bg);}
                     <?= h(substr($snap['created_at'],0,16)) ?>
                 </div>
                 <div class="snap-tags">
-                    <?php if ($snap['face_detected']): ?>
-                    <span class="tag tag-face">✅ چهره شناسایی شد</span>
+                    <?php if ((int)$snap['face_count'] > 1): ?>
+                    <span class="tag tag-noface">🚨 <?= (int)$snap['face_count'] ?> نفر در کادر</span>
+                    <?php elseif ($snap['face_detected']): ?>
+                    <span class="tag tag-face">✅ یک چهره (سالم)</span>
                     <?php else: ?>
                     <span class="tag tag-noface">❌ بدون چهره</span>
                     <?php endif; ?>

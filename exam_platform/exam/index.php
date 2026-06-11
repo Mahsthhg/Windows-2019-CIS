@@ -452,6 +452,8 @@ textarea.q-input{min-height:120px;resize:vertical;}
 
 <!-- ── Webcam Panel ── -->
 <?php if ($form['require_camera']): ?>
+<!-- موتور تشخیص چهره (هوش مصنوعی، سمت مرورگر) -->
+<script defer src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.13/dist/face-api.min.js"></script>
 <div id="cameraPanel">
     <video id="camPreview" autoplay muted playsinline></video>
     <div id="camStatus">📷 وب‌کم فعال</div>
@@ -999,17 +1001,90 @@ let camStream = null;
 let snapInterval = null;
 let camRequestInterval = null;
 
+// ── تشخیص چهره با هوش مصنوعی (face-api.js) ──
+const FACE_MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.13/model';
+let faceApiReady   = false;
+let faceMonitor    = null;
+let lastFaceCount  = -1;     // آخرین تعداد چهرهٔ تشخیص‌داده‌شده (-1 یعنی نامشخص)
+let noFaceStreak   = 0, multiFaceStreak = 0;
+let noFaceFlagged  = false, multiFaceFlagged = false;
+
+async function loadFaceModels() {
+    if (typeof faceapi === 'undefined') return false;
+    try {
+        await faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODEL_URL);
+        faceApiReady = true;
+        return true;
+    } catch (e) {
+        faceApiReady = false;
+        return false;
+    }
+}
+
+async function detectFaceCount() {
+    const video = document.getElementById('camPreview');
+    if (!faceApiReady || !video || video.readyState < 2) return null;
+    try {
+        const res = await faceapi.detectAllFaces(
+            video,
+            new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 })
+        );
+        return res.length;
+    } catch (e) { return null; }
+}
+
+function setCamState(text, color) {
+    const status = document.getElementById('camStatus');
+    if (status) { status.textContent = text; status.style.color = color || '#94a3b8'; }
+    const dot = document.getElementById('camPanelDot');
+    if (dot) dot.style.background = color || '#94a3b8';
+}
+
+function startFaceMonitor() {
+    if (faceMonitor) return;
+    faceMonitor = setInterval(async () => {
+        const n = await detectFaceCount();
+        if (n === null) return;
+        lastFaceCount = n;
+        if (n === 0) {
+            noFaceStreak++; multiFaceStreak = 0; multiFaceFlagged = false;
+            setCamState('⚠️ سر شما در کادر دیده نمی‌شود', '#f59e0b');
+            if (noFaceStreak >= 2 && !noFaceFlagged) {
+                recordCheat('no_face', 'سر از کادر دوربین خارج شد');
+                noFaceFlagged = true;
+                takeSnapshot('cheat_detect');
+            }
+        } else if (n > 1) {
+            multiFaceStreak++; noFaceStreak = 0; noFaceFlagged = false;
+            setCamState('🚨 ' + n + ' نفر در کادر دوربین', '#ef4444');
+            if (multiFaceStreak >= 2 && !multiFaceFlagged) {
+                recordCheat('multiple_faces', n + ' چهره در کادر دوربین دیده شد');
+                multiFaceFlagged = true;
+                takeSnapshot('cheat_detect');
+            }
+        } else {
+            noFaceStreak = 0; multiFaceStreak = 0; noFaceFlagged = false; multiFaceFlagged = false;
+            setCamState('✅ چهره تأیید شد', '#10b981');
+        }
+    }, 2500);
+}
+
 function initCamera() {
     const panel = document.getElementById('cameraPanel');
     const video = document.getElementById('camPreview');
     const status= document.getElementById('camStatus');
 
     navigator.mediaDevices.getUserMedia({ video: { width:640, height:480, facingMode:'user' }, audio: false })
-    .then(stream => {
+    .then(async stream => {
         camStream = stream;
         if (video) { video.srcObject = stream; }
         if (panel) panel.classList.add('show');
         if (status) status.textContent = '📷 وب‌کم فعال — در حال ضبط';
+
+        // بارگذاری مدل هوش مصنوعی و شروع نظارت بر چهره
+        const ok = await loadFaceModels();
+        if (ok) startFaceMonitor();
+        else if (status) status.textContent = '📷 وب‌کم فعال (نظارت تصویری)';
 
         // Take exam-start snapshot
         setTimeout(() => takeSnapshot('exam_start'), 2000);
@@ -1053,20 +1128,11 @@ function takeSnapshot(trigger = 'auto') {
             image       : imageData,
             trigger     : trigger,
             student_name: STUDENT_NAME || document.getElementById('field_name')?.value || '',
-            answer_id   : ANSWER_ID
+            answer_id   : ANSWER_ID,
+            face_count  : lastFaceCount   // نتیجهٔ هوش مصنوعی (-1 یعنی نامشخص)
         })
     })
     .then(r => r.json())
-    .then(d => {
-        const status = document.getElementById('camStatus');
-        if (status) {
-            const time = new Date().toLocaleTimeString('fa-IR');
-            status.textContent = d.face_detected ? `✅ چهره شناسایی شد (${time})` : `⚠️ چهره شناسایی نشد (${time})`;
-        }
-        if (d.ok && !d.face_detected && trigger === 'auto') {
-            recordCheat('no_face', 'چهره شناسایی نشد در اسنپشات');
-        }
-    })
     .catch(() => {});
 }
 

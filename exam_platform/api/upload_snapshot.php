@@ -20,6 +20,8 @@ $trigger  = $input['trigger'] ?? 'auto';
 $ip       = getClientIP();
 $name     = sanitizeString($input['student_name'] ?? '', 200);
 $answerId = validateInt($input['answer_id'] ?? 0, 0) ?: null;
+// نتیجهٔ هوش مصنوعی تشخیص چهره (-1 = نامشخص/مدل بارگذاری نشده)
+$faceCount = isset($input['face_count']) ? (int)$input['face_count'] : -1;
 
 if (!$form_id || empty($imageData)) {
     echo json_encode(['ok' => false, 'error' => 'داده ناقص است']);
@@ -77,8 +79,15 @@ if (file_put_contents($filepath, $decoded) === false) {
     exit();
 }
 
-// Basic face detection heuristic: check image size (not blank)
-$faceDetected = (strlen($decoded) > 5000) ? 1 : 0;
+// تعیین چهره: اگر هوش مصنوعی نتیجه داده از آن استفاده کن، وگرنه روش ساده (اندازهٔ تصویر)
+if ($faceCount >= 0) {
+    $faceDetected = ($faceCount === 1) ? 1 : 0;
+    // عکس مشکوک (بدون چهره یا چند نفر) خودکار علامت‌گذاری شود
+    $flagged = ($faceCount === 1) ? 0 : 1;
+} else {
+    $faceDetected = (strlen($decoded) > 5000) ? 1 : 0;
+    $flagged = 0;
+}
 
 // Valid trigger types
 $validTriggers = ['auto', 'admin_request', 'cheat_detect', 'exam_start', 'exam_end'];
@@ -86,8 +95,8 @@ $trigger = in_array($trigger, $validTriggers) ? $trigger : 'auto';
 
 // Save to DB
 $relPath = 'uploads/snapshots/' . $form_id . '/' . $filename;
-$pdo->prepare("INSERT INTO exam_snapshots (form_id, answer_id, user_ip, student_name, image_path, face_detected, trigger_type) VALUES (?,?,?,?,?,?,?)")
-    ->execute([$form_id, $answerId, $ip, $name, $relPath, $faceDetected, $trigger]);
+$pdo->prepare("INSERT INTO exam_snapshots (form_id, answer_id, user_ip, student_name, image_path, face_detected, face_count, flagged, trigger_type) VALUES (?,?,?,?,?,?,?,?,?)")
+    ->execute([$form_id, $answerId, $ip, $name, $relPath, $faceDetected, max(0,$faceCount), $flagged, $trigger]);
 
 $snapshotId = (int)$pdo->lastInsertId();
 
@@ -101,4 +110,6 @@ echo json_encode([
     'ok'           => true,
     'snapshot_id'  => $snapshotId,
     'face_detected'=> $faceDetected === 1,
+    'face_count'   => max(0, $faceCount),
+    'flagged'      => (bool)$flagged,
 ]);
