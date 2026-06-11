@@ -220,6 +220,23 @@ body{font-family:'Vazirmatn',sans-serif;background:var(--bg);color:var(--text);m
 const FORM_ID    = <?= $form_id ?>;
 const CSRF_TOKEN = '<?= h($csrf) ?>';
 let refreshTimer;
+let prevCheatTotal = null;
+
+// بوقِ هشدار هنگام ثبت تقلب جدید (WebAudio — بدون فایل صوتی)
+function playAlertBeep() {
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.type = 'square'; osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.08, ctx.currentTime);
+        osc.start();
+        osc.frequency.setValueAtTime(660, ctx.currentTime + 0.12);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.3);
+        osc.stop(ctx.currentTime + 0.3);
+    } catch (e) {}
+}
 
 function selectExam(id) {
     window.location.href = 'monitor.php?form_id=' + id;
@@ -260,7 +277,14 @@ function loadData() {
             document.getElementById('statTotal').textContent     = data.stats.total || 0;
             document.getElementById('statActive').textContent    = data.stats.active || 0;
             document.getElementById('statCompleted').textContent = data.stats.completed || 0;
-            document.getElementById('statCheats').textContent    = data.stats.total_cheats || 0;
+            const cheatTotal = parseInt(data.stats.total_cheats || 0);
+            document.getElementById('statCheats').textContent    = cheatTotal;
+            // هشدار زنده هنگام افزایش تقلب
+            if (prevCheatTotal !== null && cheatTotal > prevCheatTotal) {
+                playAlertBeep();
+                showToast('🚨 تقلب جدید ثبت شد! (مجموع: ' + cheatTotal + ')', 'error');
+            }
+            prevCheatTotal = cheatTotal;
 
             // Participants
             const grid = document.getElementById('participantGrid');

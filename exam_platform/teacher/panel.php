@@ -23,6 +23,13 @@ $s->execute([$tid]); $recentExams = $s->fetchAll();
 // Last 5 results
 $s = $pdo->prepare("SELECT a.user_name, a.score, a.max_score, f.title, a.submitted_at FROM answers a JOIN forms f ON a.form_id=f.id WHERE a.teacher_id=? AND a.status='completed' ORDER BY a.submitted_at DESC LIMIT 5");
 $s->execute([$tid]); $recentResults = $s->fetchAll();
+
+// آزمون‌های مشکوک (تقلب بالا) — هشدار برای معلم
+$s = $pdo->prepare("SELECT a.user_name, a.user_ip, a.cheat_count, f.title, f.id as form_id, a.submitted_at
+                    FROM answers a JOIN forms f ON a.form_id=f.id
+                    WHERE a.teacher_id=? AND a.cheat_count >= 3 AND a.status='completed'
+                    ORDER BY a.cheat_count DESC, a.submitted_at DESC LIMIT 6");
+$s->execute([$tid]); $suspicious = $s->fetchAll();
 ?>
 <!DOCTYPE html>
 <html dir="rtl" lang="fa">
@@ -71,6 +78,30 @@ $s->execute([$tid]); $recentResults = $s->fetchAll();
             <div class="stat-label">جلسه حضور‌وغیاب</div>
         </div>
     </div>
+
+    <!-- Suspicious activity alert -->
+    <?php if (!empty($suspicious)): ?>
+    <div class="card" style="margin-bottom:24px;border:1.5px solid #fecaca;">
+        <div class="card-header" style="background:#fef2f2;">
+            <h3 style="color:#991b1b;">🚨 آزمون‌های مشکوک (تقلب بالا)</h3>
+            <span style="font-size:12px;color:#dc2626;"><?= count($suspicious) ?> مورد</span>
+        </div>
+        <div class="list-items">
+            <?php foreach ($suspicious as $sp): ?>
+            <div class="list-item">
+                <div class="item-info">
+                    <strong><?= h($sp['user_name'] ?: 'ناشناس') ?></strong>
+                    <small><?= h($sp['title']) ?> | <?= h(substr($sp['submitted_at'],0,16)) ?> | <span style="font-family:monospace;"><?= h($sp['user_ip']) ?></span></small>
+                </div>
+                <div class="item-actions">
+                    <span class="badge badge-red">⚠️ <?= (int)$sp['cheat_count'] ?> تقلب</span>
+                    <a href="results.php?form=<?= (int)$sp['form_id'] ?>" class="btn btn-secondary btn-sm">بررسی</a>
+                </div>
+            </div>
+            <?php endforeach; ?>
+        </div>
+    </div>
+    <?php endif; ?>
 
     <div class="grid-2col">
         <!-- Recent Exams -->

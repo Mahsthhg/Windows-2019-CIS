@@ -139,11 +139,19 @@ body{
 .btn-close:hover{background:#cbd5e1;}
 .btn-home{background:#6366f1;color:white;}
 .btn-home:hover{background:#4f46e5;}
+.btn-print{background:#0ea5e9;color:white;}
+.btn-print:hover{background:#0284c7;}
 
 @media(max-width:480px){
     .stats-row{grid-template-columns:repeat(3,1fr);gap:8px;}
     .score-big{font-size:48px;}
     .actions{flex-direction:column;}
+}
+@media print{
+    body{background:#fff !important;}
+    .confetti-wrap,.actions{display:none !important;}
+    .card{box-shadow:none !important;border:1px solid #cbd5e1;}
+    .print-footer{display:block !important;}
 }
 </style>
 </head>
@@ -198,8 +206,17 @@ body{
 
     <?php endif; ?>
 
+    <?php if ($showRes !== 'never'): ?>
+    <div class="print-footer" style="display:none;text-align:center;padding:0 24px 20px;font-size:12px;color:#64748b;">
+        تاریخ: <?= date('Y/m/d - H:i') ?> | <?= h(APP_NAME) ?>
+    </div>
+    <?php endif; ?>
+
     <div class="actions">
         <button class="btn btn-close" onclick="window.close(); history.back();">🔒 بستن</button>
+        <?php if ($showRes !== 'never'): ?>
+        <button class="btn btn-print" onclick="window.print()">🖨️ چاپ / ذخیره PDF</button>
+        <?php endif; ?>
         <button class="btn btn-home" onclick="window.location='../index.php'">🏠 صفحه اصلی</button>
     </div>
 </div>

@@ -7,6 +7,27 @@ require_once __DIR__ . '/../config/security.php';
 $teacher = requireTeacherAuth();
 $tid = $teacher['id'];
 
+/** ارزیابی درستی یک پاسخ (هم‌راستا با منطق نمره‌دهی سرور) */
+function evalQCorrect(string $type, $raw, ?string $correctAns): bool {
+    if ($raw === null || $raw === '') return false;
+    if ($type === 'fill_blank') {
+        $norm = fn($s) => mb_strtolower(trim(preg_replace('/\s*\|\s*/u', '|', (string)$s)));
+        return $norm($raw) !== '' && $norm($raw) === $norm($correctAns ?? '');
+    }
+    if ($type === 'numeric') {
+        return abs((float)$raw - (float)$correctAns) < 0.0001;
+    }
+    if ($type === 'multi_select') {
+        $ca = json_decode((string)$correctAns, true);
+        if (!is_array($ca)) $ca = [$correctAns];
+        $ca = array_map('strval', $ca); sort($ca);
+        $ua = $raw !== '' ? explode(',', (string)$raw) : [];
+        $ua = array_map('strval', $ua); sort($ua);
+        return $ua === $ca;
+    }
+    return (string)$raw === (string)$correctAns;
+}
+
 // Export CSV
 if (isset($_GET['export_csv']) && isset($_GET['form'])) {
     $fid = validateInt($_GET['form'], 1);
@@ -98,6 +119,31 @@ if ($fid) {
         $s = $pdo->prepare("SELECT * FROM questions WHERE form_id=? ORDER BY order_index");
         $s->execute([$fid]);
         $questions = $s->fetchAll();
+
+        // آنالیز تک‌تک سوالات (درصد پاسخ صحیح هر سوال در میان همهٔ شرکت‌کنندگان)
+        $questionStats = [];
+        $scoreableTypes = ['multiple_choice','dropdown','true_false','numeric','fill_blank','multi_select'];
+        $qNo = 0;
+        foreach ($questions as $q) {
+            if ($q['type'] === 'section_title') continue;
+            $qNo++;
+            if (!in_array($q['type'], $scoreableTypes)) continue;
+            $cc = 0; $wc = 0; $ec = 0;
+            foreach ($results as $r) {
+                $ans = json_decode($r['answers'] ?? '[]', true) ?: [];
+                $raw = $ans[$q['id']] ?? null;
+                if ($raw === null || $raw === '') { $ec++; continue; }
+                if (evalQCorrect($q['type'], $raw, $q['correct_answer'])) $cc++; else $wc++;
+            }
+            $tot = $cc + $wc + $ec;
+            $questionStats[] = [
+                'no'      => $qNo,
+                'title'   => $q['title'],
+                'correct' => $cc, 'wrong' => $wc, 'empty' => $ec,
+                'total'   => $tot,
+                'pct'     => $tot > 0 ? round($cc / $tot * 100) : 0,
+            ];
+        }
     }
 }
 ?>
@@ -135,6 +181,13 @@ if ($fid) {
 @media(max-width:768px){
   .charts-2col{grid-template-columns:1fr;}
   .data-table{min-width:720px;}
+}
+@media print{
+  .sidebar,.mobile-topbar,.sidebar-overlay,.header-actions,.form-selector,.btn,form{display:none !important;}
+  .main-content{margin:0 !important;padding:0 !important;}
+  body{background:#fff !important;}
+  .card{box-shadow:none !important;border:1px solid #cbd5e1 !important;break-inside:avoid;}
+  .data-table{min-width:0 !important;font-size:11px;}
 }
 </style>
 </head>
@@ -239,11 +292,48 @@ if ($fid) {
     </div>
 </div>
 
+<!-- Question-by-question analysis -->
+<?php if (!empty($questionStats)): ?>
+<div class="card" style="margin-bottom:24px;">
+    <div class="card-header"><h3>🔍 آنالیز تک‌تک سوالات</h3>
+        <span style="font-size:12px;color:var(--text-muted);">درصد پاسخ صحیح در میان شرکت‌کنندگان</span>
+    </div>
+    <div class="card-body">
+        <?php foreach ($questionStats as $qs):
+            $pct = $qs['pct'];
+            $barColor = $pct >= 70 ? '#10b981' : ($pct >= 40 ? '#f59e0b' : '#ef4444');
+        ?>
+        <div style="margin-bottom:16px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px;">
+                <div style="font-size:13px;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                    <span style="display:inline-flex;width:24px;height:24px;border-radius:50%;background:#ede9fe;color:#5b21b6;align-items:center;justify-content:center;font-weight:800;font-size:11px;margin-left:6px;"><?= $qs['no'] ?></span>
+                    <?= h(mb_substr($qs['title'], 0, 80)) ?>
+                </div>
+                <span style="font-weight:800;font-size:14px;color:<?= $barColor ?>;"><?= $pct ?>%</span>
+            </div>
+            <div style="height:10px;background:#f1f5f9;border-radius:8px;overflow:hidden;">
+                <div style="height:100%;width:<?= $pct ?>%;background:<?= $barColor ?>;border-radius:8px;transition:width .4s;"></div>
+            </div>
+            <div style="display:flex;gap:12px;margin-top:5px;font-size:11px;color:var(--text-muted);">
+                <span style="color:#10b981;">✅ <?= $qs['correct'] ?> صحیح</span>
+                <span style="color:#ef4444;">❌ <?= $qs['wrong'] ?> غلط</span>
+                <span style="color:#f59e0b;">📭 <?= $qs['empty'] ?> بی‌پاسخ</span>
+                <?php if ($pct < 40 && $qs['total'] > 0): ?><span style="color:#dc2626;font-weight:700;">🔴 سوال دشوار</span><?php endif; ?>
+            </div>
+        </div>
+        <?php endforeach; ?>
+    </div>
+</div>
+<?php endif; ?>
+
 <!-- Results Table -->
 <div class="card">
     <div class="card-header">
         <h3>📋 پاسخنامه کامل (<?= count($results) ?> نفر)</h3>
-        <a href="results.php?form=<?= $fid ?>&export_csv=1" class="btn btn-secondary btn-sm">📥 CSV</a>
+        <div style="display:flex;gap:8px;">
+            <button onclick="window.print()" class="btn btn-ghost btn-sm">🖨️ چاپ</button>
+            <a href="results.php?form=<?= $fid ?>&export_csv=1" class="btn btn-secondary btn-sm">📥 CSV</a>
+        </div>
     </div>
     <div class="table-wrap">
         <table class="data-table">
