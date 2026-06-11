@@ -232,5 +232,6 @@ $csrf = generateCsrfToken();
 </div>
 
 </div>
+<?php include __DIR__ . '/../includes/ai_widget.php'; ?>
 </body>
 </html>

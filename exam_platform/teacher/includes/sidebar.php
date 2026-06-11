@@ -47,3 +47,4 @@ function toggleSidebar() {
     document.getElementById('sidebarOverlay')?.classList.toggle('open');
 }
 </script>
+<?php include __DIR__ . '/../../includes/ai_widget.php'; ?>
