@@ -1,7 +1,7 @@
 'use strict';
 
 // ═══════════════════════════════════════════════
-//  SFG2 MOD MENU v1.0  |  Frida Gadget Script
+//  SFG2 MOD MENU v2.0  |  Frida Gadget Script
 //  Offline Only: NoRecoil · AntiFlash · NoSpread
 //                NoSway · FastReload · UnlimitedAmmo
 // ═══════════════════════════════════════════════
@@ -38,7 +38,7 @@ function findAny(names) {
     return null;
 }
 
-// Hook a float-returning function: return 0.0 when feature ON
+// Hook a float-returning method: return 0.0 when feature ON, call original otherwise
 function hookFloat(names, key) {
     var r = findAny(names);
     if (!r) { console.log("[-] " + key + ": not found"); return; }
@@ -51,13 +51,13 @@ function hookFloat(names, key) {
 
 // ── Native Hooks ────────────────────────────────
 
-// 1. No Recoil
+// 1. No Recoil — confirmed: _ZN4AMan9GetRecoilEv exists
 hookFloat([
     "_ZN4AMan9GetRecoilEv",
     "_ZN7AWeapon9GetRecoilEv"
 ], "noRecoil");
 
-// 2. Anti-Flashbang
+// 2. Anti-Flashbang — confirmed: _ZN4AMan5FlashEf exists
 (function() {
     var names = [
         "_ZN4AMan5FlashEf",
@@ -80,6 +80,8 @@ hookFloat([
 })();
 
 // 3. No Bullet Spread
+// WeaponSpread/ZoomSpread are UProperties (not exported functions).
+// Best-effort: try any getter-style exports that may exist in this APK's build.
 hookFloat([
     "_ZN7AWeapon9GetSpreadEv",
     "_ZN7AWeapon14GetWeaponSpreadEv",
@@ -91,6 +93,7 @@ hookFloat([
 ], "noSpread");
 
 // 4. No Sway
+// ManSpread/PlayerSpread are UProperties — same best-effort approach.
 hookFloat([
     "_ZN4AMan7GetSwayEv",
     "_ZN7AWeapon7GetSwayEv",
@@ -99,25 +102,63 @@ hookFloat([
     "_ZN4AMan12GetWeaponSwayEv"
 ], "noSway");
 
-// 5. Fast Reload — return tiny time when enabled
+// 5. Fast Reload
+// Confirmed: _ZN7AWeapon11StartReloadEv and _ZN7AWeapon9EndReloadEv both exist.
+// Strategy: call original StartReload, then immediately call EndReload on the same
+// weapon object so the engine sees a completed reload cycle instantly.
 (function() {
-    var r = findAny([
-        "_ZN7AWeapon13GetReloadTimeEv",
-        "_ZN14AShotgunWeapon13GetReloadTimeEv",
-        "_ZN7AWeapon16GetReloadDurationEv",
-        "_ZN7AWeapon15GetReloadSpeedEv",
-        "_ZN7AWeapon14GetReloadDelayEv"
-    ]);
-    if (!r) { console.log("[-] fastReload: not found"); return; }
-    var orig = new NativeFunction(r.addr, 'float', ['pointer']);
-    Interceptor.replace(r.addr, new NativeCallback(function(self) {
-        return features.fastReload ? 0.05 : orig(self);
-    }, 'float', ['pointer']));
-    console.log("[+] fastReload: " + r.name);
+    var startAddr = findExport("_ZN7AWeapon11StartReloadEv");
+    var endAddr   = findExport("_ZN7AWeapon9EndReloadEv");
+
+    if (!startAddr) { console.log("[-] fastReload: StartReload not found"); return; }
+    if (!endAddr)   { console.log("[-] fastReload: EndReload not found"); return; }
+
+    var origStart = new NativeFunction(startAddr, 'void', ['pointer']);
+    var callEnd   = new NativeFunction(endAddr,   'void', ['pointer']);
+
+    // Guard prevents EndReload from re-entering StartReload via engine callbacks
+    var inFastReload = false;
+
+    Interceptor.replace(startAddr, new NativeCallback(function(self) {
+        if (!features.fastReload || inFastReload) {
+            origStart(self);
+            return;
+        }
+        inFastReload = true;
+        origStart(self);
+        callEnd(self);
+        inFastReload = false;
+    }, 'void', ['pointer']));
+
+    console.log("[+] fastReload: StartReload + EndReload hooked");
 })();
 
-// 6. Unlimited Ammo — block consumption, fallback to getter hook
+// 6. Unlimited Ammo
+// Confirmed: _ZN7AWeapon4FireEv and _ZN7AWeapon8FullAmmoEv both exist.
+// Strategy: wrap Fire() — after each real shot, call FullAmmo() on the same weapon
+// object to instantly refill. Falls back to blocking the consume call if FullAmmo
+// is missing in a particular APK variant.
 (function() {
+    var fireAddr     = findExport("_ZN7AWeapon4FireEv");
+    var fullAmmoAddr = findExport("_ZN7AWeapon8FullAmmoEv");
+
+    if (!fireAddr) { console.log("[-] unlimitedAmmo: Fire not found"); return; }
+
+    if (fullAmmoAddr) {
+        var origFire = new NativeFunction(fireAddr,     'void', ['pointer']);
+        var fullAmmo = new NativeFunction(fullAmmoAddr, 'void', ['pointer']);
+
+        Interceptor.replace(fireAddr, new NativeCallback(function(self) {
+            origFire(self);
+            if (features.unlimitedAmmo) fullAmmo(self);
+        }, 'void', ['pointer']));
+
+        console.log("[+] unlimitedAmmo: Fire + FullAmmo hooked");
+        return;
+    }
+
+    // Fallback: block ammo-consumption call
+    console.log("[~] unlimitedAmmo: FullAmmo not found, trying consume-block");
     var consumeR = findAny([
         "_ZN7AWeapon8UseAmmoEi",
         "_ZN7AWeapon11ConsumeAmmoEi",
@@ -126,27 +167,13 @@ hookFloat([
         "_ZN7AWeapon13SpendAmmunitionEv"
     ]);
     if (consumeR) {
-        var orig = new NativeFunction(consumeR.addr, 'void', ['pointer', 'int']);
+        var origC = new NativeFunction(consumeR.addr, 'void', ['pointer', 'int']);
         Interceptor.replace(consumeR.addr, new NativeCallback(function(self, n) {
-            if (!features.unlimitedAmmo) orig(self, n);
+            if (!features.unlimitedAmmo) origC(self, n);
         }, 'void', ['pointer', 'int']));
-        console.log("[+] unlimitedAmmo (consume): " + consumeR.name);
-        return;
-    }
-    var getR = findAny([
-        "_ZN7AWeapon12GetCurrentAmmoEv",
-        "_ZN7AWeapon7GetAmmoEv",
-        "_ZN4AMan12GetCurrentAmmoEv",
-        "_ZN7AWeapon15GetCurrentBulletsEv"
-    ]);
-    if (getR) {
-        var origGet = new NativeFunction(getR.addr, 'int', ['pointer']);
-        Interceptor.replace(getR.addr, new NativeCallback(function(self) {
-            return features.unlimitedAmmo ? 999 : origGet(self);
-        }, 'int', ['pointer']));
-        console.log("[+] unlimitedAmmo (getter): " + getR.name);
+        console.log("[+] unlimitedAmmo (consume-block): " + consumeR.name);
     } else {
-        console.log("[-] unlimitedAmmo: not found");
+        console.log("[-] unlimitedAmmo: no method found");
     }
 })();
 
@@ -154,7 +181,18 @@ hookFloat([
 
 if (Java.available) {
     Java.perform(function() {
-        var Activity = Java.use("android.app.Activity");
+        // UE4 on Android uses GameActivity, not the base Activity class.
+        // Try the UE4 class first and fall back gracefully.
+        var actClass = "com.epicgames.ue4.GameActivity";
+        var Activity;
+        try {
+            Activity = Java.use(actClass);
+        } catch(e) {
+            actClass  = "android.app.Activity";
+            Activity  = Java.use(actClass);
+        }
+        console.log("[+] UI hook: " + actClass + ".onResume");
+
         Activity.onResume.implementation = function() {
             this.onResume();
             if (!menuCreated) {
@@ -206,7 +244,6 @@ function buildMenu(activity) {
         hRow.setOrientation(0); // HORIZONTAL
         hRow.setGravity(0x10);  // CENTER_VERTICAL
 
-        // Red accent dot
         var accentDot = VIEW.$new(activity);
         var adBg = GD.$new();
         adBg.setShape(1); // OVAL
@@ -216,18 +253,15 @@ function buildMenu(activity) {
         adLP.setMargins(0, 0, dp(8), 0);
         hRow.addView(accentDot, adLP);
 
-        // Title
         var titleTv = TV.$new(activity);
         titleTv.setText("SFG2 MOD MENU");
         titleTv.setTextColor(0xFFFFFFFF);
         titleTv.setTextSize(14.0);
         titleTv.setTypeface(TF.DEFAULT_BOLD.value);
-        var tLP = LLLP.$new(WRAP, WRAP, 1.0);
-        hRow.addView(titleTv, tLP);
+        hRow.addView(titleTv, LLLP.$new(WRAP, WRAP, 1.0));
 
-        // Minimize (−) button
         var minBtn = BTN.$new(activity);
-        minBtn.setText("−"); // − character
+        minBtn.setText("−"); // − minus sign
         minBtn.setTextColor(0xFFFFFFFF);
         minBtn.setTextSize(17.0);
         var minBg = GD.$new();
@@ -271,14 +305,12 @@ function buildMenu(activity) {
                 rBg.setColor(0x1AFFFFFF);
                 row.setBackground(rBg);
 
-                // Label
                 var lbl = TV.$new(activity);
                 lbl.setText(d.label);
                 lbl.setTextColor(0xFFCCCCCC);
                 lbl.setTextSize(12.0);
                 row.addView(lbl, LLLP.$new(WRAP, WRAP, 1.0));
 
-                // Toggle button + its background (captured per closure)
                 var togBg = GD.$new();
                 togBg.setShape(0);
                 togBg.setCornerRadius(dp(10));
@@ -310,9 +342,9 @@ function buildMenu(activity) {
             })(defs[i]);
         }
 
-        // Version text
+        // Version footer
         var verTv = TV.$new(activity);
-        verTv.setText("v1.0  •  Offline Only");
+        verTv.setText("v2.0  •  Offline Only");
         verTv.setTextColor(0x55FFFFFF);
         verTv.setTextSize(9.0);
         verTv.setGravity(1); // CENTER_HORIZONTAL
@@ -320,7 +352,7 @@ function buildMenu(activity) {
         verLP.setMargins(0, dp(6), 0, 0);
         panel.addView(verTv, verLP);
 
-        // Add panel to DecorView
+        // Add panel to DecorView (top-left, below status bar)
         var panelFLP = FLLP.$new(WRAP, WRAP);
         panelFLP.setMargins(dp(16), dp(90), 0, 0);
         decor.addView(panel, panelFLP);
@@ -338,7 +370,7 @@ function buildMenu(activity) {
 
         var dotFLP = FLLP.$new(dp(44), dp(44));
         dotFLP.setMargins(dp(10), dp(90), 0, 0);
-        dot.setVisibility(8); // GONE
+        dot.setVisibility(8); // GONE initially
         decor.addView(dot, dotFLP);
 
         // ── Drag logic ───────────────────────────
@@ -355,9 +387,11 @@ function buildMenu(activity) {
                 if (a === 2) { // ACTION_MOVE
                     var dx = Math.round(ev.getRawX() - dragX[0]);
                     var dy = Math.round(ev.getRawY() - dragY[0]);
-                    var newL = panelFLP.leftMargin.value + dx;
-                    var newT = panelFLP.topMargin.value  + dy;
-                    panelFLP.setMargins(newL, newT, 0, 0);
+                    panelFLP.setMargins(
+                        panelFLP.leftMargin.value + dx,
+                        panelFLP.topMargin.value  + dy,
+                        0, 0
+                    );
                     panel.setLayoutParams(panelFLP);
                     dragX[0] = ev.getRawX();
                     dragY[0] = ev.getRawY();
@@ -382,6 +416,6 @@ function buildMenu(activity) {
             }
         });
 
-        console.log("[+] SFG2 Mod Menu ready! Drag header to move it.");
+        console.log("[+] SFG2 Mod Menu v2.0 ready! Drag header to reposition.");
     });
 }
